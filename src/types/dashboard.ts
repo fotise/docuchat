@@ -86,6 +86,8 @@ export interface UploadedDocument {
   name: string
   type: string
   tone: UploadedDocTone
+  size?: number
+  uploadedAt?: number
 }
 
 export interface WorkspaceRouteConfig {

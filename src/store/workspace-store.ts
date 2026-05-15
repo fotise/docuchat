@@ -1,10 +1,19 @@
 import { create } from "zustand"
 import {
-  deleteWorkspace,
+  addWorkspaceDocuments,
+  deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
+  deleteWorkspace as deleteStoredWorkspace,
   saveWorkspace,
   seedWorkspacesIfEmpty,
+  type StoredWorkspaceDocument,
 } from "@/lib/chat-history/indexed-db"
-import type { ChartPoint, IconKey, WorkspaceRouteConfig } from "@/types/dashboard"
+import type {
+  ChartPoint,
+  IconKey,
+  UploadedDocTone,
+  UploadedDocument,
+  WorkspaceRouteConfig,
+} from "@/types/dashboard"
 
 interface WorkspaceStoreState {
   isLoaded: boolean
@@ -13,6 +22,8 @@ interface WorkspaceStoreState {
   createWorkspace: () => Promise<WorkspaceRouteConfig>
   renameWorkspace: (workspaceId: string, title: string) => Promise<void>
   updateWorkspaceIcon: (workspaceId: string, icon: IconKey) => Promise<void>
+  uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
+  deleteWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
 }
 
@@ -34,6 +45,60 @@ function buildEmptyChartData(): ChartPoint[] {
       signal: 0,
     })
   )
+}
+
+function createId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+}
+
+function getFileExtension(fileName: string) {
+  return fileName.split(".").pop()?.toLowerCase() || "file"
+}
+
+function getDocumentTone(fileName: string): UploadedDocTone {
+  const extension = getFileExtension(fileName)
+
+  if (["csv", "xls", "xlsx"].includes(extension)) {
+    return "green"
+  }
+
+  if (["doc", "docx", "ppt", "pptx"].includes(extension)) {
+    return "red"
+  }
+
+  return "blue"
+}
+
+function createUploadedDocument(file: File): UploadedDocument {
+  return {
+    id: createId(),
+    name: file.name,
+    type: getFileExtension(file.name),
+    tone: getDocumentTone(file.name),
+    size: file.size,
+    uploadedAt: Date.now(),
+  }
+}
+
+async function createStoredDocument(
+  workspaceId: string,
+  document: UploadedDocument,
+  file: File
+): Promise<StoredWorkspaceDocument> {
+  return {
+    ...document,
+    workspaceId,
+    mimeType: file.type || "application/octet-stream",
+    blob: file,
+    content: await file.arrayBuffer(),
+  }
+}
+
+function getEmptyHighlightedFile(): Pick<UploadedDocument, "name" | "tone"> {
+  return {
+    name: "No documents uploaded",
+    tone: "blue",
+  }
 }
 
 function buildNewWorkspace(existingWorkspaces: WorkspaceRouteConfig[]) {
@@ -144,8 +209,87 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }))
   },
 
+  uploadWorkspaceFiles: async (workspaceId, files) => {
+    if (files.length === 0) {
+      return
+    }
+
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const uploadedDocuments = files.map(createUploadedDocument)
+    const storedDocuments = await Promise.all(
+      uploadedDocuments.map((document, index) =>
+        createStoredDocument(workspaceId, document, files[index])
+      )
+    )
+    const updatedWorkspace = {
+      ...workspace,
+      documentCount: workspace.uploadedDocuments.length + uploadedDocuments.length,
+      uploadedDocuments: [...workspace.uploadedDocuments, ...uploadedDocuments],
+    }
+
+    await addWorkspaceDocuments(storedDocuments)
+    await saveWorkspace(updatedWorkspace)
+
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+  },
+
+  deleteWorkspaceDocument: async (workspaceId, documentId) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const documentToDelete = workspace.uploadedDocuments.find(
+      (document) => document.id === documentId
+    )
+
+    if (!documentToDelete) {
+      return
+    }
+
+    const uploadedDocuments = workspace.uploadedDocuments.filter(
+      (document) => document.id !== documentId
+    )
+    const fallbackDocument = uploadedDocuments[0] ?? getEmptyHighlightedFile()
+    const updatedWorkspace = {
+      ...workspace,
+      documentCount: uploadedDocuments.length,
+      uploadedDocuments,
+      views: workspace.views.map((view) =>
+        view.highlightedFile.name === documentToDelete.name
+          ? {
+              ...view,
+              highlightedFile: {
+                name: fallbackDocument.name,
+                tone: fallbackDocument.tone,
+              },
+            }
+          : view
+      ),
+    }
+
+    await deleteStoredWorkspaceDocument(documentId)
+    await saveWorkspace(updatedWorkspace)
+
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+  },
+
   deleteWorkspace: async (workspaceId) => {
-    await deleteWorkspace(workspaceId)
+    await deleteStoredWorkspace(workspaceId)
     set((state) => ({
       workspaces: state.workspaces.filter(
         (workspace) => workspace.id !== workspaceId

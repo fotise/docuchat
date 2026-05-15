@@ -2,7 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it } from "vitest"
 import { LlmProvider } from "@/components/llm/llm-provider"
 import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
-import { clearDocuChatData } from "@/lib/chat-history/indexed-db"
+import {
+  clearDocuChatData,
+  getWorkspaceDocuments,
+} from "@/lib/chat-history/indexed-db"
 import type { LlmClient } from "@/lib/llm"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import App from "./App"
@@ -42,9 +45,68 @@ describe("App", () => {
   it("announces placeholder upload controls", async () => {
     renderApp()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Upload Files" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Workspace" }))
 
-    expect(screen.getByText("File upload is not connected yet.")).toBeTruthy()
+    expect(screen.getByText("Workspace document management is not connected yet.")).toBeTruthy()
+  })
+
+  it("uploads workspace files into IndexedDB", async () => {
+    renderApp()
+
+    const file = new File(["quarterly revenue"], "Quarterly_Report.pdf", {
+      type: "application/pdf",
+    })
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: { files: [file] },
+    })
+
+    expect(await screen.findByText("Quarterly_Report.pdf")).toBeTruthy()
+    expect(await screen.findByText("Uploaded Quarterly_Report.pdf to this workspace.")).toBeTruthy()
+
+    const storedDocuments = await getWorkspaceDocuments("market-research")
+    const storedDocument = storedDocuments.find(
+      (document) => document.name === "Quarterly_Report.pdf"
+    )
+
+    expect(storedDocument?.mimeType).toBe("application/pdf")
+    expect(storedDocument?.content.byteLength).toBe(file.size)
+  })
+
+  it("opens file details and deletes a workspace file", async () => {
+    renderApp()
+
+    const file = new File(["delete me"], "Delete_Me.pdf", {
+      type: "application/pdf",
+    })
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: { files: [file] },
+    })
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
+
+    expect(await screen.findByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeTruthy()
+    expect(screen.getByText("File details")).toBeTruthy()
+    expect(screen.getAllByText("Delete_Me.pdf")).not.toHaveLength(0)
+    expect(screen.getByText("9 B")).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: "Escape" })
+
+    expect(screen.queryByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeNull()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Delete_Me.pdf" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Open details for Delete_Me.pdf" })).toBeNull()
+    })
+
+    const storedDocuments = await getWorkspaceDocuments("market-research")
+
+    expect(
+      storedDocuments.some((document) => document.name === "Delete_Me.pdf")
+    ).toBe(false)
   })
 
   it("uses the configured LLM client for chat replies", async () => {

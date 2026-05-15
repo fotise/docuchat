@@ -14,6 +14,8 @@ export function WorkspacePage() {
   const navigate = useNavigate()
   const workspaces = useWorkspaceStore((state) => state.workspaces)
   const deleteWorkspace = useWorkspaceStore((state) => state.deleteWorkspace)
+  const deleteWorkspaceDocument = useWorkspaceStore((state) => state.deleteWorkspaceDocument)
+  const uploadWorkspaceFiles = useWorkspaceStore((state) => state.uploadWorkspaceFiles)
   const workspace = workspaces.find((item) => item.id === workspaceId)
 
   const ensureWorkspaceInitialized = useDashboardStore(
@@ -66,6 +68,22 @@ export function WorkspacePage() {
     navigate(fallbackWorkspace?.path ?? "/", { replace: true })
   }
 
+  async function handleUploadFiles(files: File[]) {
+    if (!workspace) {
+      return
+    }
+
+    await uploadWorkspaceFiles(workspace.id, files)
+  }
+
+  async function handleDeleteDocument(documentId: string) {
+    if (!workspace) {
+      return
+    }
+
+    await deleteWorkspaceDocument(workspace.id, documentId)
+  }
+
   return (
     <DashboardShell
       workspace={workspace}
@@ -76,6 +94,8 @@ export function WorkspacePage() {
             uploadLabel={labels.uploadButton}
             manageLabel={labels.manageButton}
             documents={workspace.uploadedDocuments}
+            onUploadFiles={(files) => void handleUploadFiles(files)}
+            onDeleteDocument={(documentId) => void handleDeleteDocument(documentId)}
             onDeleteWorkspace={() => void handleDeleteWorkspace()}
           />
 

@@ -1,20 +1,29 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 import type {
+  UploadedDocument,
   WorkspaceMessage,
   WorkspaceRouteConfig,
   WorkspaceTabId,
 } from "@/types/dashboard"
 
 const DB_NAME = "docuchat"
-const DB_VERSION = 2
+const DB_VERSION = 3
 const MESSAGE_STORE = "messages"
 const WORKSPACE_STORE = "workspaces"
+const DOCUMENT_STORE = "documents"
 const MESSAGE_LIMIT = 100
 
 export interface StoredChatMessage extends WorkspaceMessage {
   workspaceId: string
   tabId: WorkspaceTabId
   createdAt: number
+}
+
+export interface StoredWorkspaceDocument extends UploadedDocument {
+  workspaceId: string
+  mimeType: string
+  blob: Blob
+  content: ArrayBuffer
 }
 
 interface DocuChatDb extends DBSchema {
@@ -33,6 +42,14 @@ interface DocuChatDb extends DBSchema {
     value: WorkspaceRouteConfig
     indexes: {
       path: string
+    }
+  }
+  documents: {
+    key: string
+    value: StoredWorkspaceDocument
+    indexes: {
+      workspaceId: string
+      uploadedAt: number
     }
   }
 }
@@ -63,6 +80,15 @@ function getDb() {
         })
 
         workspacesStore.createIndex("path", "path", { unique: true })
+      }
+
+      if (!db.objectStoreNames.contains(DOCUMENT_STORE)) {
+        const documentsStore = db.createObjectStore(DOCUMENT_STORE, {
+          keyPath: "id",
+        })
+
+        documentsStore.createIndex("workspaceId", "workspaceId")
+        documentsStore.createIndex("uploadedAt", "uploadedAt")
       }
     },
   })
@@ -194,14 +220,51 @@ export async function saveWorkspace(workspace: WorkspaceRouteConfig) {
   await db.put(WORKSPACE_STORE, workspace)
 }
 
+export async function addWorkspaceDocuments(documents: StoredWorkspaceDocument[]) {
+  if (documents.length === 0) {
+    return
+  }
+
+  const db = await getDb()
+  const tx = db.transaction(DOCUMENT_STORE, "readwrite")
+
+  await Promise.all([
+    ...documents.map((document) => tx.store.put(document)),
+    tx.done,
+  ])
+}
+
+export async function getWorkspaceDocuments(
+  workspaceId: string
+): Promise<StoredWorkspaceDocument[]> {
+  const db = await getDb()
+  const documents = await db.getAllFromIndex(
+    DOCUMENT_STORE,
+    "workspaceId",
+    workspaceId
+  )
+
+  return documents.sort((a, b) => (a.uploadedAt ?? 0) - (b.uploadedAt ?? 0))
+}
+
+export async function deleteWorkspaceDocument(documentId: string) {
+  const db = await getDb()
+  await db.delete(DOCUMENT_STORE, documentId)
+}
+
 export async function deleteWorkspace(workspaceId: string) {
   const db = await getDb()
   await db.delete(WORKSPACE_STORE, workspaceId)
 
-  const tx = db.transaction(MESSAGE_STORE, "readwrite")
-  const workspaceIndex = tx.store.index("workspaceId")
+  const tx = db.transaction([MESSAGE_STORE, DOCUMENT_STORE], "readwrite")
+  const messageWorkspaceIndex = tx.objectStore(MESSAGE_STORE).index("workspaceId")
+  const documentWorkspaceIndex = tx.objectStore(DOCUMENT_STORE).index("workspaceId")
 
-  for await (const cursor of workspaceIndex.iterate(workspaceId)) {
+  for await (const cursor of messageWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  for await (const cursor of documentWorkspaceIndex.iterate(workspaceId)) {
     await cursor.delete()
   }
 
@@ -210,11 +273,15 @@ export async function deleteWorkspace(workspaceId: string) {
 
 export async function clearDocuChatData() {
   const db = await getDb()
-  const tx = db.transaction([MESSAGE_STORE, WORKSPACE_STORE], "readwrite")
+  const tx = db.transaction(
+    [MESSAGE_STORE, WORKSPACE_STORE, DOCUMENT_STORE],
+    "readwrite"
+  )
 
   await Promise.all([
     tx.objectStore(MESSAGE_STORE).clear(),
     tx.objectStore(WORKSPACE_STORE).clear(),
+    tx.objectStore(DOCUMENT_STORE).clear(),
     tx.done,
   ])
 }
