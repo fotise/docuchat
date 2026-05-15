@@ -132,6 +132,10 @@ export function UploadedDocumentsCard({
     return `${(size / (1024 * 1024)).toFixed(1)} MB`
   }
 
+  function getDisplayTone(document: UploadedDocument) {
+    return document.toBeProcessed ? "gray" : "blue"
+  }
+
   return (
     <Card className="rounded-[18px] border-white/10 bg-[linear-gradient(180deg,rgba(18,28,79,.92),rgba(12,20,58,.94))] text-white shadow-[0_10px_30px_rgba(0,0,0,.45)]">
       <CardHeader className="pb-3">
@@ -147,6 +151,7 @@ export function UploadedDocumentsCard({
               key={doc.id}
               name={doc.name}
               tone={doc.tone}
+              toBeProcessed={doc.toBeProcessed}
               onClick={() => setSelectedDocument(doc)}
             />
           ))}
@@ -242,7 +247,7 @@ export function UploadedDocumentsCard({
           <div className="w-full max-w-sm overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
             <div className="p-5">
               <div className="flex items-start gap-4">
-                <FilePreviewIcon tone={selectedDocument.tone} size="large" />
+                <FilePreviewIcon tone={getDisplayTone(selectedDocument)} size="large" />
 
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">

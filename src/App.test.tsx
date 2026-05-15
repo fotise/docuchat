@@ -57,6 +57,12 @@ describe("App", () => {
       type: "application/pdf",
     })
 
+    expect(
+      screen.queryByRole("progressbar", {
+        name: "Market Research file processing progress",
+      })
+    ).toBeNull()
+
     fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
       target: { files: [file] },
     })
@@ -71,6 +77,37 @@ describe("App", () => {
 
     expect(storedDocument?.mimeType).toBe("application/pdf")
     expect(storedDocument?.content.byteLength).toBe(file.size)
+    expect(storedDocument?.toBeProcessed).toBe(true)
+    expect(storedDocument?.tone).toBe("gray")
+
+    expect(
+      await screen.findByRole("progressbar", {
+        name: "Market Research file processing progress",
+      })
+    ).toHaveAttribute("aria-valuenow", "86")
+  })
+
+  it("shows gray pending progress when every workspace file needs processing", async () => {
+    renderApp()
+
+    fireEvent.click(await screen.findByRole("button", { name: "New Workspace" }))
+    expect(await screen.findByText("This workspace is ready. Upload documents or ask a question to begin.")).toBeTruthy()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["pending"], "Pending_Report.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(
+      await screen.findByRole("progressbar", {
+        name: "Workspace 4 file processing progress",
+      })
+    ).toHaveAttribute("aria-valuenow", "0")
   })
 
   it("opens file details and deletes a workspace file", async () => {

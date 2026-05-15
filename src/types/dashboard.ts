@@ -8,7 +8,7 @@ export type IconKey =
   | "shield"
   | "compass"
 
-export type UploadedDocTone = "blue" | "red" | "green"
+export type UploadedDocTone = "blue" | "red" | "green" | "gray"
 export type MessageSide = "left" | "right"
 export type WorkspaceTabId = string
 export type ChartMetricKey = "growth" | "reach" | "intent" | "signal"
@@ -88,6 +88,7 @@ export interface UploadedDocument {
   tone: UploadedDocTone
   size?: number
   uploadedAt?: number
+  toBeProcessed?: boolean
 }
 
 export interface WorkspaceRouteConfig {

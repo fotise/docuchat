@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { dashboardConfig } from "@/config/dashboard"
 import { cn } from "@/lib/utils"
 import { useWorkspaceStore } from "@/store/workspace-store"
+import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import { AppIcon } from "./icon"
 import { IconPeaker } from "./icon-peaker"
 import { NavItem } from "./nav-item"
@@ -11,6 +12,26 @@ import { NavItem } from "./nav-item"
 interface SidebarContentProps {
   showBrand?: boolean
   onNavigate?: () => void
+}
+
+function getProcessingProgress(workspace: WorkspaceRouteConfig) {
+  const totalFiles = workspace.uploadedDocuments.length
+  const pendingFiles = workspace.uploadedDocuments.filter(
+    (document) => document.toBeProcessed
+  ).length
+
+  if (totalFiles === 0 || pendingFiles === 0) {
+    return null
+  }
+
+  const processedFiles = totalFiles - pendingFiles
+  const percentage = Math.round((processedFiles / totalFiles) * 100)
+
+  return {
+    pendingFiles,
+    percentage,
+    isAllPending: pendingFiles === totalFiles,
+  }
 }
 
 export function SidebarContent({
@@ -95,6 +116,7 @@ export function SidebarContent({
       <div className="px-2 pb-4">
         {workspaces.map((workspace) => {
           const isActive = location.pathname === workspace.path
+          const processingProgress = getProcessingProgress(workspace)
 
           return (
             <div
@@ -142,9 +164,29 @@ export function SidebarContent({
                     event.preventDefault()
                     startRename(workspace.id, workspace.title)
                   }}
-                  className="min-w-0 flex-1 truncate outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-sky-400"
+                  className="min-w-0 flex-1 outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-sky-400"
                 >
-                  {workspace.navLabel}
+                  <span className="block truncate">{workspace.navLabel}</span>
+                  {processingProgress ? (
+                    <span
+                      className="mt-2 block h-1.5 overflow-hidden rounded-full bg-slate-500/70"
+                      role="progressbar"
+                      aria-label={`${workspace.title} file processing progress`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={processingProgress.percentage}
+                    >
+                      <span
+                        className={cn(
+                          "block h-full rounded-full transition-all",
+                          processingProgress.isAllPending
+                            ? "bg-slate-500"
+                            : "bg-blue-400"
+                        )}
+                        style={{ width: `${processingProgress.percentage}%` }}
+                      />
+                    </span>
+                  ) : null}
                 </Link>
               )}
             </div>

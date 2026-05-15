@@ -10,7 +10,6 @@ import {
 import type {
   ChartPoint,
   IconKey,
-  UploadedDocTone,
   UploadedDocument,
   WorkspaceRouteConfig,
 } from "@/types/dashboard"
@@ -55,28 +54,15 @@ function getFileExtension(fileName: string) {
   return fileName.split(".").pop()?.toLowerCase() || "file"
 }
 
-function getDocumentTone(fileName: string): UploadedDocTone {
-  const extension = getFileExtension(fileName)
-
-  if (["csv", "xls", "xlsx"].includes(extension)) {
-    return "green"
-  }
-
-  if (["doc", "docx", "ppt", "pptx"].includes(extension)) {
-    return "red"
-  }
-
-  return "blue"
-}
-
 function createUploadedDocument(file: File): UploadedDocument {
   return {
     id: createId(),
     name: file.name,
     type: getFileExtension(file.name),
-    tone: getDocumentTone(file.name),
+    tone: "gray",
     size: file.size,
     uploadedAt: Date.now(),
+    toBeProcessed: true,
   }
 }
 
