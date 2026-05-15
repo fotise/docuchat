@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import { LlmProvider } from "@/components/llm/llm-provider"
+import { clearChatHistory } from "@/lib/chat-history/indexed-db"
 import type { LlmClient } from "@/lib/llm"
 import App from "./App"
 
@@ -19,9 +20,10 @@ function renderApp() {
   )
 }
 
-afterEach(() => {
+afterEach(async () => {
   cleanup()
   localStorage.clear()
+  await clearChatHistory()
   window.history.pushState({}, "", "/")
 })
 

@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
+import { replaceWorkspaceMessages } from "@/lib/chat-history/indexed-db"
 import type {
   WorkspaceMessage,
   WorkspaceRouteConfig,
@@ -11,15 +12,22 @@ type MessagesByWorkspaceTab = Record<
   string,
   Record<string, WorkspaceMessage[]>
 >
+type LoadedByWorkspaceTab = Record<string, Record<string, boolean>>
 type ReplyingByWorkspaceTab = Record<string, Record<string, boolean>>
 
 interface DashboardStoreState {
   activeTabByWorkspace: ActiveTabByWorkspace
   messagesByWorkspaceTab: MessagesByWorkspaceTab
+  loadedByWorkspaceTab: LoadedByWorkspaceTab
   replyingByWorkspaceTab: ReplyingByWorkspaceTab
 
   ensureWorkspaceInitialized: (workspace: WorkspaceRouteConfig) => void
   setActiveTab: (workspaceId: string, tabId: WorkspaceTabId) => void
+  setMessages: (
+    workspaceId: string,
+    tabId: WorkspaceTabId,
+    messages: WorkspaceMessage[]
+  ) => void
   addMessage: (
     workspaceId: string,
     tabId: WorkspaceTabId,
@@ -30,7 +38,7 @@ interface DashboardStoreState {
     tabId: WorkspaceTabId,
     value: boolean
   ) => void
-  resetWorkspaceState: (workspace: WorkspaceRouteConfig) => void
+  resetWorkspaceState: (workspace: WorkspaceRouteConfig) => Promise<void>
 }
 
 function buildInitialMessages(
@@ -54,6 +62,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
     (set) => ({
       activeTabByWorkspace: {},
       messagesByWorkspaceTab: {},
+      loadedByWorkspaceTab: {},
       replyingByWorkspaceTab: {},
 
       ensureWorkspaceInitialized: (workspace) =>
@@ -65,22 +74,12 @@ export const useDashboardStore = create<DashboardStoreState>()(
             (tab) => tab.id === existingActiveTab
           )
 
-          const initialMessages = buildInitialMessages(workspace)
-          const existingMessages = state.messagesByWorkspaceTab[workspace.id] ?? {}
-
           return {
             activeTabByWorkspace: {
               ...state.activeTabByWorkspace,
               [workspace.id]: isExistingTabValid
                 ? existingActiveTab
                 : defaultTab,
-            },
-            messagesByWorkspaceTab: {
-              ...state.messagesByWorkspaceTab,
-              [workspace.id]: {
-                ...initialMessages,
-                ...existingMessages,
-              },
             },
             replyingByWorkspaceTab: {
               ...state.replyingByWorkspaceTab,
@@ -97,6 +96,24 @@ export const useDashboardStore = create<DashboardStoreState>()(
           },
         })),
 
+      setMessages: (workspaceId, tabId, messages) =>
+        set((state) => ({
+          messagesByWorkspaceTab: {
+            ...state.messagesByWorkspaceTab,
+            [workspaceId]: {
+              ...(state.messagesByWorkspaceTab[workspaceId] ?? {}),
+              [tabId]: messages,
+            },
+          },
+          loadedByWorkspaceTab: {
+            ...state.loadedByWorkspaceTab,
+            [workspaceId]: {
+              ...(state.loadedByWorkspaceTab[workspaceId] ?? {}),
+              [tabId]: true,
+            },
+          },
+        })),
+
       addMessage: (workspaceId, tabId, message) =>
         set((state) => ({
           messagesByWorkspaceTab: {
@@ -107,6 +124,13 @@ export const useDashboardStore = create<DashboardStoreState>()(
                 ...((state.messagesByWorkspaceTab[workspaceId]?.[tabId] ?? [])),
                 message,
               ],
+            },
+          },
+          loadedByWorkspaceTab: {
+            ...state.loadedByWorkspaceTab,
+            [workspaceId]: {
+              ...(state.loadedByWorkspaceTab[workspaceId] ?? {}),
+              [tabId]: true,
             },
           },
         })),
@@ -122,7 +146,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
           },
         })),
 
-      resetWorkspaceState: (workspace) =>
+      resetWorkspaceState: async (workspace) => {
+        const initialMessages = buildInitialMessages(workspace)
+
+        await replaceWorkspaceMessages(workspace.id, initialMessages)
+
         set((state) => ({
           activeTabByWorkspace: {
             ...state.activeTabByWorkspace,
@@ -130,20 +158,30 @@ export const useDashboardStore = create<DashboardStoreState>()(
           },
           messagesByWorkspaceTab: {
             ...state.messagesByWorkspaceTab,
-            [workspace.id]: buildInitialMessages(workspace),
+            [workspace.id]: initialMessages,
+          },
+          loadedByWorkspaceTab: {
+            ...state.loadedByWorkspaceTab,
+            [workspace.id]: workspace.views.reduce(
+              (acc, view) => {
+                acc[view.tabId] = true
+                return acc
+              },
+              {} as Record<WorkspaceTabId, boolean>
+            ),
           },
           replyingByWorkspaceTab: {
             ...state.replyingByWorkspaceTab,
             [workspace.id]: {},
           },
-        })),
+        }))
+      },
     }),
     {
-      name: "docuchat-dashboard-v5",
+      name: "docuchat-dashboard-v6",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         activeTabByWorkspace: state.activeTabByWorkspace,
-        messagesByWorkspaceTab: state.messagesByWorkspaceTab,
       }),
     }
   )

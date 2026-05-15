@@ -10,7 +10,8 @@ DocuChat UI is a React, TypeScript, Vite, and Tailwind CSS dashboard prototype f
 - Tailwind CSS 4
 - shadcn-style UI primitives
 - Radix UI primitives
-- Zustand for persisted dashboard state
+- Zustand for lightweight dashboard UI state
+- IndexedDB, via `idb`, for persisted chat history
 - Recharts for workspace charts
 - Chrome local LLM integration with mock fallback
 - Vitest and React Testing Library for tests
@@ -69,7 +70,8 @@ npm run lint && npm run test && npm run build
 
 - `src/App.tsx` defines routing and default workspace redirection.
 - `src/config/dashboard.ts` contains the workspace, document, label, tab, and chart configuration.
-- `src/store/dashboard-store.ts` persists active tabs and chat messages with Zustand.
+- `src/store/dashboard-store.ts` keeps lightweight UI state and the latest loaded messages in memory.
+- `src/lib/chat-history/indexed-db.ts` persists chat history in IndexedDB.
 - `src/components/dashboard/` contains feature-level dashboard components.
 - `src/components/ui/` contains reusable UI primitives.
 - `src/lib/mock-chat.ts` generates mock assistant replies.
@@ -87,6 +89,16 @@ The chat flow uses an external LLM provider component instead of calling a model
 - `LlmProvider` accepts a custom `client` prop for tests, alternate providers, or future backend integrations.
 
 Chrome local LLM support requires a Chrome version/profile where the built-in AI `LanguageModel` API is enabled and available. Browsers without that API continue to work through the mock fallback.
+
+## Chat persistence
+
+Chat history is stored in IndexedDB instead of `localStorage` so longer conversations can be retained without blocking the main thread.
+
+- Database: `docuchat`
+- Object store: `messages`
+- Indexes: `workspaceId`, `tabId`, `createdAt`, and `byWorkspaceTabCreatedAt`
+- Query pattern: load the most recent messages for the current workspace/tab, then keep them in Zustand memory while the UI is active.
+- Zustand persistence only stores lightweight UI state such as the active tab.
 
 ## Notes
 

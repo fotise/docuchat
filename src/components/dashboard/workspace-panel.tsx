@@ -3,6 +3,12 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { dashboardConfig } from "@/config/dashboard"
+import {
+  addChatMessage,
+  addChatMessages,
+  createStoredChatMessage,
+  getRecentChatMessages,
+} from "@/lib/chat-history/indexed-db"
 import { useLlmClient } from "@/lib/llm/context"
 import { useDashboardStore } from "@/store/dashboard-store"
 import type {
@@ -36,10 +42,14 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     (state) => state.activeTabByWorkspace[workspace.id] ?? workspace.tabs[0]?.id ?? ""
   )
   const setActiveTab = useDashboardStore((state) => state.setActiveTab)
+  const setMessages = useDashboardStore((state) => state.setMessages)
   const addMessage = useDashboardStore((state) => state.addMessage)
   const setReplying = useDashboardStore((state) => state.setReplying)
   const storedMessages = useDashboardStore(
     (state) => state.messagesByWorkspaceTab[workspace.id]?.[activeTab]
+  )
+  const isLoaded = useDashboardStore(
+    (state) => !!state.loadedByWorkspaceTab[workspace.id]?.[activeTab]
   )
   const isReplying = useDashboardStore(
     (state) => !!state.replyingByWorkspaceTab[workspace.id]?.[activeTab]
@@ -65,6 +75,41 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const currentMessages = storedMessages ?? currentView.initialMessages
   const isSendDisabled = inputValue.trim().length === 0 || isReplying
 
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadMessages() {
+      const messages = await getRecentChatMessages(workspace.id, activeTab)
+
+      if (!isMounted) {
+        return
+      }
+
+      if (messages.length > 0) {
+        setMessages(workspace.id, activeTab, messages)
+        return
+      }
+
+      await addChatMessages(
+        currentView.initialMessages.map((message) =>
+          createStoredChatMessage(workspace.id, activeTab, message)
+        )
+      )
+
+      if (isMounted) {
+        setMessages(workspace.id, activeTab, currentView.initialMessages)
+      }
+    }
+
+    if (!isLoaded) {
+      void loadMessages()
+    }
+
+    return () => {
+      isMounted = false
+    }
+  }, [activeTab, currentView.initialMessages, isLoaded, setMessages, workspace.id])
+
   async function handleSend() {
     const trimmed = inputValue.trim()
 
@@ -74,8 +119,12 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
 
     const tabIdAtSend: WorkspaceTabId = activeTab
     const tabLabelAtSend = activeTabLabel
+    const userMessage = createMessage("left", trimmed)
 
-    addMessage(workspace.id, tabIdAtSend, createMessage("left", trimmed))
+    addMessage(workspace.id, tabIdAtSend, userMessage)
+    void addChatMessage(
+      createStoredChatMessage(workspace.id, tabIdAtSend, userMessage)
+    )
     setInputValue("")
     setReplying(workspace.id, tabIdAtSend, true)
 
@@ -91,20 +140,26 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
         signal: abortController.signal,
       })
 
-      addMessage(
-        workspace.id,
-        tabIdAtSend,
-        createMessage("right", assistantText)
+      const assistantMessage = createMessage("right", assistantText)
+
+      addMessage(workspace.id, tabIdAtSend, assistantMessage)
+      await addChatMessage(
+        createStoredChatMessage(workspace.id, tabIdAtSend, assistantMessage)
       )
     } catch {
       if (!abortController.signal.aborted) {
+        const errorMessage = createMessage(
+          "right",
+          "I couldn't complete that LLM request. Please try again."
+        )
+
         addMessage(
           workspace.id,
           tabIdAtSend,
-          createMessage(
-            "right",
-            "I couldn't complete that LLM request. Please try again."
-          )
+          errorMessage
+        )
+        await addChatMessage(
+          createStoredChatMessage(workspace.id, tabIdAtSend, errorMessage)
         )
       }
     } finally {
