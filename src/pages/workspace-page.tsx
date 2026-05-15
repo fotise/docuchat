@@ -1,16 +1,20 @@
 import { useEffect } from "react"
-import { useParams } from "react-router-dom"
+import { useNavigate, useParams } from "react-router-dom"
 import { dashboardConfig } from "@/config/dashboard"
 import { ActiveChatsCard } from "@/components/dashboard/active-chats-card"
 import { DashboardShell } from "@/components/dashboard/dashboard-shell"
 import { UploadedDocumentsCard } from "@/components/dashboard/uploaded-documents-card"
 import { WorkspacePanel } from "@/components/dashboard/workspace-panel"
 import { useDashboardStore } from "@/store/dashboard-store"
+import { useWorkspaceStore } from "@/store/workspace-store"
 import { NotFoundPage } from "./not-found-page"
 
 export function WorkspacePage() {
   const { workspaceId } = useParams()
-  const workspace = dashboardConfig.workspaces.find((item) => item.id === workspaceId)
+  const navigate = useNavigate()
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const deleteWorkspace = useWorkspaceStore((state) => state.deleteWorkspace)
+  const workspace = workspaces.find((item) => item.id === workspaceId)
 
   const ensureWorkspaceInitialized = useDashboardStore(
     (state) => state.ensureWorkspaceInitialized
@@ -51,6 +55,17 @@ export function WorkspacePage() {
 
   const { labels } = dashboardConfig
 
+  async function handleDeleteWorkspace() {
+    if (!workspace) {
+      return
+    }
+
+    await deleteWorkspace(workspace.id)
+
+    const fallbackWorkspace = workspaces.find((item) => item.id !== workspace.id)
+    navigate(fallbackWorkspace?.path ?? "/", { replace: true })
+  }
+
   return (
     <DashboardShell
       workspace={workspace}
@@ -61,6 +76,7 @@ export function WorkspacePage() {
             uploadLabel={labels.uploadButton}
             manageLabel={labels.manageButton}
             documents={workspace.uploadedDocuments}
+            onDeleteWorkspace={() => void handleDeleteWorkspace()}
           />
 
           <ActiveChatsCard

@@ -1,6 +1,8 @@
 import { useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { dashboardConfig } from "@/config/dashboard"
+import { useWorkspaceStore } from "@/store/workspace-store"
 import { AppIcon } from "./icon"
 import { NavItem } from "./nav-item"
 
@@ -14,14 +16,46 @@ export function SidebarContent({
   onNavigate,
 }: SidebarContentProps) {
   const [statusMessage, setStatusMessage] = useState("")
-  const { brand, sidebar, workspaces } = dashboardConfig
+  const [renamingWorkspaceId, setRenamingWorkspaceId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState("")
+  const navigate = useNavigate()
+  const { brand, sidebar } = dashboardConfig
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const createWorkspace = useWorkspaceStore((state) => state.createWorkspace)
+  const renameWorkspace = useWorkspaceStore((state) => state.renameWorkspace)
 
-  function handleCreateWorkspace() {
-    setStatusMessage("Workspace creation is not connected yet.")
+  async function handleCreateWorkspace() {
+    const workspace = await createWorkspace()
+
+    setStatusMessage(`${workspace.title} created.`)
+    onNavigate?.()
+    navigate(workspace.path)
   }
 
   function handleRecentChatClick(item: string) {
     setStatusMessage(`${item} is a recent chat shortcut placeholder.`)
+  }
+
+  function startRename(workspaceId: string, title: string) {
+    setRenamingWorkspaceId(workspaceId)
+    setDraftName(title)
+  }
+
+  async function commitRename(workspaceId: string) {
+    const trimmedName = draftName.trim()
+
+    if (!trimmedName) {
+      setRenamingWorkspaceId(null)
+      return
+    }
+
+    await renameWorkspace(workspaceId, trimmedName)
+    setRenamingWorkspaceId(null)
+    setStatusMessage(`${trimmedName} renamed.`)
+  }
+
+  function cancelRename() {
+    setRenamingWorkspaceId(null)
   }
 
   return (
@@ -42,7 +76,7 @@ export function SidebarContent({
       <div className="p-4">
         <Button
           aria-label={sidebar.ctaLabel}
-          onClick={handleCreateWorkspace}
+          onClick={() => void handleCreateWorkspace()}
           className="w-full rounded-xl bg-gradient-to-b from-blue-500 to-blue-700 text-white shadow-[0_10px_24px_rgba(34,107,255,0.35)] hover:from-blue-500 hover:to-blue-600"
         >
           <span className="mr-2 text-base">+</span>
@@ -62,7 +96,33 @@ export function SidebarContent({
             icon={workspace.navIcon}
             label={workspace.navLabel}
             onClick={onNavigate}
-          />
+            onDoubleClick={() => startRename(workspace.id, workspace.title)}
+          >
+            {renamingWorkspaceId === workspace.id ? (
+              <input
+                aria-label={`Rename sidebar workspace ${workspace.title}`}
+                autoFocus
+                value={draftName}
+                onClick={(event) => event.preventDefault()}
+                onBlur={() => void commitRename(workspace.id)}
+                onChange={(event) => setDraftName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault()
+                    void commitRename(workspace.id)
+                  }
+
+                  if (event.key === "Escape") {
+                    event.preventDefault()
+                    cancelRename()
+                  }
+                }}
+                className="min-w-0 flex-1 rounded-md border border-sky-400/30 bg-white/10 px-2 py-1 text-sm font-semibold text-white outline-none ring-2 ring-sky-400/20"
+              />
+            ) : (
+              <span className="truncate">{workspace.navLabel}</span>
+            )}
+          </NavItem>
         ))}
 
         <div className="px-3 pb-2 pt-5 text-xs text-indigo-200/70">

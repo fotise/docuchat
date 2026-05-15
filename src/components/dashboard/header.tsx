@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react"
 import { ChevronDown, Heart } from "lucide-react"
 import { dashboardConfig } from "@/config/dashboard"
+import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import { AppIcon } from "./icon"
 import { MobileMenu } from "./mobile-menu"
@@ -25,10 +26,35 @@ function HeaderChip({ icon, label }: HeaderChipProps) {
 
 export function Header({ workspace }: HeaderProps) {
   const [statusMessage, setStatusMessage] = useState("")
+  const [isRenaming, setIsRenaming] = useState(false)
+  const [draftTitle, setDraftTitle] = useState("")
+  const renameWorkspace = useWorkspaceStore((state) => state.renameWorkspace)
   const { header } = dashboardConfig
 
   function handleExploreClick() {
     setStatusMessage("Workspace explorer controls are not connected yet.")
+  }
+
+  async function commitRename() {
+    const trimmedTitle = draftTitle.trim()
+
+    if (!trimmedTitle) {
+      setIsRenaming(false)
+      return
+    }
+
+    await renameWorkspace(workspace.id, trimmedTitle)
+    setIsRenaming(false)
+    setStatusMessage(`Workspace renamed to ${trimmedTitle}.`)
+  }
+
+  function cancelRename() {
+    setIsRenaming(false)
+  }
+
+  function startRename() {
+    setDraftTitle(workspace.title)
+    setIsRenaming(true)
   }
 
   return (
@@ -43,12 +69,38 @@ export function Header({ workspace }: HeaderProps) {
         </div>
 
         <div className="min-w-0">
-          <div className="truncate text-lg font-extrabold text-white md:text-xl">
-            {workspace.title}
-            {workspace.isFavorite ? (
-              <Heart className="ml-1 inline h-3.5 w-3.5 fill-sky-400 text-sky-400" />
-            ) : null}
-          </div>
+          {isRenaming ? (
+            <input
+              aria-label="Workspace name"
+              autoFocus
+              value={draftTitle}
+              onBlur={() => void commitRename()}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  void commitRename()
+                }
+
+                if (event.key === "Escape") {
+                  cancelRename()
+                }
+              }}
+              className="h-8 max-w-full rounded-lg border border-sky-400/30 bg-white/10 px-2 text-lg font-extrabold text-white outline-none ring-2 ring-sky-400/20 md:text-xl"
+            />
+          ) : (
+            <button
+              type="button"
+              aria-label={`Rename workspace ${workspace.title}`}
+              title="Double-click to rename workspace"
+              onDoubleClick={startRename}
+              className="max-w-full truncate text-left text-lg font-extrabold text-white outline-none focus-visible:rounded-lg focus-visible:ring-2 focus-visible:ring-sky-400 md:text-xl"
+            >
+              {workspace.title}
+              {workspace.isFavorite ? (
+                <Heart className="ml-1 inline h-3.5 w-3.5 fill-sky-400 text-sky-400" />
+              ) : null}
+            </button>
+          )}
 
           <div className="truncate text-sm text-slate-400">
             {workspace.documentCount} {workspace.documentLabel}

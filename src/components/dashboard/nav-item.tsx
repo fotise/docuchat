@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom"
+import type { ReactNode } from "react"
 import { AppIcon } from "./icon"
 import { cn } from "@/lib/utils"
 import type { IconKey } from "@/types/dashboard"
@@ -10,6 +11,8 @@ interface NavItemProps {
   active?: boolean
   small?: boolean
   onClick?: () => void
+  onDoubleClick?: () => void
+  children?: ReactNode
 }
 
 function getClasses(active: boolean, small: boolean) {
@@ -31,16 +34,21 @@ export function NavItem({
   active = false,
   small = false,
   onClick,
+  onDoubleClick,
+  children,
 }: NavItemProps) {
+  const content = children ?? <span className="truncate">{label}</span>
+
   if (to) {
     return (
       <NavLink
         to={to}
         onClick={onClick}
+        onDoubleClick={onDoubleClick}
         className={({ isActive }) => getClasses(isActive || active, small)}
       >
         <AppIcon name={icon} className="h-4 w-4 shrink-0 text-slate-200" />
-        <span className="truncate">{label}</span>
+        {content}
       </NavLink>
     )
   }
@@ -49,10 +57,11 @@ export function NavItem({
     <button
       type="button"
       onClick={onClick}
+      onDoubleClick={onDoubleClick}
       className={getClasses(active, small)}
     >
       <AppIcon name={icon} className="h-4 w-4 shrink-0 text-slate-200" />
-      <span className="truncate">{label}</span>
+      {content}
     </button>
   )
 }

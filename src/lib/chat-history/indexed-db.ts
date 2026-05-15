@@ -1,9 +1,14 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
-import type { WorkspaceMessage, WorkspaceTabId } from "@/types/dashboard"
+import type {
+  WorkspaceMessage,
+  WorkspaceRouteConfig,
+  WorkspaceTabId,
+} from "@/types/dashboard"
 
 const DB_NAME = "docuchat"
-const DB_VERSION = 1
+const DB_VERSION = 2
 const MESSAGE_STORE = "messages"
+const WORKSPACE_STORE = "workspaces"
 const MESSAGE_LIMIT = 100
 
 export interface StoredChatMessage extends WorkspaceMessage {
@@ -23,6 +28,13 @@ interface DocuChatDb extends DBSchema {
       byWorkspaceTabCreatedAt: [string, WorkspaceTabId, number]
     }
   }
+  workspaces: {
+    key: string
+    value: WorkspaceRouteConfig
+    indexes: {
+      path: string
+    }
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<DocuChatDb>> | null = null
@@ -30,18 +42,28 @@ let dbPromise: Promise<IDBPDatabase<DocuChatDb>> | null = null
 function getDb() {
   dbPromise ??= openDB<DocuChatDb>(DB_NAME, DB_VERSION, {
     upgrade(db) {
-      const messagesStore = db.createObjectStore(MESSAGE_STORE, {
-        keyPath: "id",
-      })
+      if (!db.objectStoreNames.contains(MESSAGE_STORE)) {
+        const messagesStore = db.createObjectStore(MESSAGE_STORE, {
+          keyPath: "id",
+        })
 
-      messagesStore.createIndex("workspaceId", "workspaceId")
-      messagesStore.createIndex("tabId", "tabId")
-      messagesStore.createIndex("createdAt", "createdAt")
-      messagesStore.createIndex("byWorkspaceTabCreatedAt", [
-        "workspaceId",
-        "tabId",
-        "createdAt",
-      ])
+        messagesStore.createIndex("workspaceId", "workspaceId")
+        messagesStore.createIndex("tabId", "tabId")
+        messagesStore.createIndex("createdAt", "createdAt")
+        messagesStore.createIndex("byWorkspaceTabCreatedAt", [
+          "workspaceId",
+          "tabId",
+          "createdAt",
+        ])
+      }
+
+      if (!db.objectStoreNames.contains(WORKSPACE_STORE)) {
+        const workspacesStore = db.createObjectStore(WORKSPACE_STORE, {
+          keyPath: "id",
+        })
+
+        workspacesStore.createIndex("path", "path", { unique: true })
+      }
     },
   })
 
@@ -140,4 +162,59 @@ export async function replaceWorkspaceMessages(
 export async function clearChatHistory() {
   const db = await getDb()
   await db.clear(MESSAGE_STORE)
+}
+
+export async function getWorkspaces(): Promise<WorkspaceRouteConfig[]> {
+  const db = await getDb()
+  return db.getAll(WORKSPACE_STORE)
+}
+
+export async function seedWorkspacesIfEmpty(
+  workspaces: WorkspaceRouteConfig[]
+): Promise<WorkspaceRouteConfig[]> {
+  const db = await getDb()
+  const existingCount = await db.count(WORKSPACE_STORE)
+
+  if (existingCount > 0) {
+    return db.getAll(WORKSPACE_STORE)
+  }
+
+  const tx = db.transaction(WORKSPACE_STORE, "readwrite")
+
+  await Promise.all([
+    ...workspaces.map((workspace) => tx.store.put(workspace)),
+    tx.done,
+  ])
+
+  return workspaces
+}
+
+export async function saveWorkspace(workspace: WorkspaceRouteConfig) {
+  const db = await getDb()
+  await db.put(WORKSPACE_STORE, workspace)
+}
+
+export async function deleteWorkspace(workspaceId: string) {
+  const db = await getDb()
+  await db.delete(WORKSPACE_STORE, workspaceId)
+
+  const tx = db.transaction(MESSAGE_STORE, "readwrite")
+  const workspaceIndex = tx.store.index("workspaceId")
+
+  for await (const cursor of workspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  await tx.done
+}
+
+export async function clearDocuChatData() {
+  const db = await getDb()
+  const tx = db.transaction([MESSAGE_STORE, WORKSPACE_STORE], "readwrite")
+
+  await Promise.all([
+    tx.objectStore(MESSAGE_STORE).clear(),
+    tx.objectStore(WORKSPACE_STORE).clear(),
+    tx.done,
+  ])
 }

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Settings, Upload } from "lucide-react"
+import { Settings, Trash2, Upload } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import type { UploadedDocument } from "@/types/dashboard"
@@ -10,6 +10,8 @@ interface UploadedDocumentsCardProps {
   uploadLabel: string
   manageLabel: string
   documents: UploadedDocument[]
+  deleteLabel?: string
+  onDeleteWorkspace?: () => void
 }
 
 export function UploadedDocumentsCard({
@@ -17,6 +19,8 @@ export function UploadedDocumentsCard({
   uploadLabel,
   manageLabel,
   documents,
+  deleteLabel = "Delete Workspace",
+  onDeleteWorkspace,
 }: UploadedDocumentsCardProps) {
   const [statusMessage, setStatusMessage] = useState("")
 
@@ -65,6 +69,18 @@ export function UploadedDocumentsCard({
           <Settings className="mr-2 h-4 w-4" />
           {manageLabel}
         </Button>
+
+        {onDeleteWorkspace ? (
+          <Button
+            variant="destructive"
+            aria-label={deleteLabel}
+            onClick={onDeleteWorkspace}
+            className="mt-3 w-full rounded-xl border border-rose-400/20 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            {deleteLabel}
+          </Button>
+        ) : null}
 
         <p className="mt-3 min-h-4 text-xs text-sky-200/75" role="status">
           {statusMessage}

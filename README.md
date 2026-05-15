@@ -71,6 +71,7 @@ npm run lint && npm run test && npm run build
 - `src/App.tsx` defines routing and default workspace redirection.
 - `src/config/dashboard.ts` contains the workspace, document, label, tab, and chart configuration.
 - `src/store/dashboard-store.ts` keeps lightweight UI state and the latest loaded messages in memory.
+- `src/store/workspace-store.ts` manages dynamic workspace creation, deletion, and IndexedDB persistence.
 - `src/lib/chat-history/indexed-db.ts` persists chat history in IndexedDB.
 - `src/components/dashboard/` contains feature-level dashboard components.
 - `src/components/ui/` contains reusable UI primitives.
@@ -96,9 +97,19 @@ Chat history is stored in IndexedDB instead of `localStorage` so longer conversa
 
 - Database: `docuchat`
 - Object store: `messages`
+- Object store: `workspaces`
 - Indexes: `workspaceId`, `tabId`, `createdAt`, and `byWorkspaceTabCreatedAt`
 - Query pattern: load the most recent messages for the current workspace/tab, then keep them in Zustand memory while the UI is active.
 - Zustand persistence only stores lightweight UI state such as the active tab.
+
+## Workspaces
+
+A workspace is modeled as a set of documents plus chat tabs/history.
+
+- Seed/demo workspaces come from `src/config/dashboard.ts` on first load.
+- Created workspaces are saved in IndexedDB and immediately appear in the sidebar.
+- Deleting a workspace removes its workspace record and cascades deletion of its chat messages.
+- New workspaces start with no uploaded documents and one general chat tab.
 
 ## Notes
 

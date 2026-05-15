@@ -2,9 +2,11 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
 import { dashboardConfig } from "@/config/dashboard"
 import { NotFoundPage } from "@/pages/not-found-page"
 import { WorkspacePage } from "@/pages/workspace-page"
+import { useWorkspaceStore } from "@/store/workspace-store"
 
 export default function App() {
-  const defaultPath = dashboardConfig.workspaces[0]?.path ?? "/workspaces/market-research"
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const defaultPath = workspaces[0]?.path ?? dashboardConfig.workspaces[0]?.path ?? "/workspaces/market-research"
 
   return (
     <BrowserRouter>

@@ -1,9 +1,11 @@
 import { Link } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { dashboardConfig } from "@/config/dashboard"
+import { useWorkspaceStore } from "@/store/workspace-store"
 
 export function NotFoundPage() {
-  const defaultPath = dashboardConfig.workspaces[0]?.path ?? "/"
+  const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const defaultPath = workspaces[0]?.path ?? dashboardConfig.workspaces[0]?.path ?? "/"
   const { labels } = dashboardConfig
 
   return (
