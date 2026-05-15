@@ -1,0 +1,18 @@
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
+import { dashboardConfig } from "@/config/dashboard"
+import { NotFoundPage } from "@/pages/not-found-page"
+import { WorkspacePage } from "@/pages/workspace-page"
+
+export default function App() {
+  const defaultPath = dashboardConfig.workspaces[0]?.path ?? "/workspaces/market-research"
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to={defaultPath} replace />} />
+        <Route path="/workspaces/:workspaceId" element={<WorkspacePage />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </BrowserRouter>
+  )
+}
