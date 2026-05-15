@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import { LlmProvider } from "@/components/llm/llm-provider"
 import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
@@ -96,6 +96,84 @@ describe("App", () => {
     fireEvent.keyDown(input, { key: "Enter" })
 
     expect(await screen.findAllByText("Market Lab")).not.toHaveLength(0)
+  })
+
+  it("changes a workspace icon from the header icon peaker", async () => {
+    renderApp()
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change icon for Market Research" })
+    )
+    fireEvent.click(await screen.findByRole("button", { name: "Use Legal icon" }))
+
+    expect(
+      await screen.findByRole("button", { name: "Change icon for Market Research" })
+    ).toHaveAttribute("aria-expanded", "false")
+
+    await waitFor(() => {
+      expect(useWorkspaceStore.getState().workspaces[0]?.navIcon).toBe("scale")
+    })
+  })
+
+  it("changes a workspace icon from the sidebar icon", async () => {
+    renderApp()
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Change sidebar icon for Market Research",
+      })
+    )
+    fireEvent.click(await screen.findByRole("button", { name: "Use Business icon" }))
+
+    await waitFor(() => {
+      expect(useWorkspaceStore.getState().workspaces[0]?.navIcon).toBe("briefcase")
+    })
+  })
+
+  it("keeps only one icon peaker open at a time", async () => {
+    renderApp()
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change icon for Market Research" })
+    )
+    expect(screen.getAllByText("Workspace icon")).toHaveLength(1)
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Change sidebar icon for Market Research",
+      })
+    )
+
+    expect(screen.getAllByText("Workspace icon")).toHaveLength(1)
+    expect(
+      screen.getByRole("button", { name: "Change icon for Market Research" })
+    ).toHaveAttribute("aria-expanded", "false")
+  })
+
+  it("closes the icon peaker on Escape", async () => {
+    renderApp()
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change icon for Market Research" })
+    )
+    expect(screen.getByText("Workspace icon")).toBeTruthy()
+
+    fireEvent.keyDown(document, { key: "Escape" })
+
+    expect(screen.queryByText("Workspace icon")).toBeNull()
+  })
+
+  it("closes the icon peaker on outside click", async () => {
+    renderApp()
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Change icon for Market Research" })
+    )
+    expect(screen.getByText("Workspace icon")).toBeTruthy()
+
+    fireEvent.pointerDown(document.body)
+
+    expect(screen.queryByText("Workspace icon")).toBeNull()
   })
 
   it("deletes an existing workspace", async () => {

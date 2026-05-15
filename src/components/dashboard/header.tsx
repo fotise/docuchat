@@ -4,6 +4,7 @@ import { dashboardConfig } from "@/config/dashboard"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import { AppIcon } from "./icon"
+import { IconPeaker } from "./icon-peaker"
 import { MobileMenu } from "./mobile-menu"
 
 interface HeaderProps {
@@ -29,6 +30,7 @@ export function Header({ workspace }: HeaderProps) {
   const [isRenaming, setIsRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
   const renameWorkspace = useWorkspaceStore((state) => state.renameWorkspace)
+  const updateWorkspaceIcon = useWorkspaceStore((state) => state.updateWorkspaceIcon)
   const { header } = dashboardConfig
 
   function handleExploreClick() {
@@ -64,9 +66,11 @@ export function Header({ workspace }: HeaderProps) {
           <MobileMenu />
         </div>
 
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-400/20 to-sky-400/5 text-sky-300">
-          <AppIcon name={workspace.navIcon} className="h-4 w-4" />
-        </div>
+        <IconPeaker
+          value={workspace.navIcon}
+          workspaceTitle={workspace.title}
+          onChange={(icon) => void updateWorkspaceIcon(workspace.id, icon)}
+        />
 
         <div className="min-w-0">
           {isRenaming ? (

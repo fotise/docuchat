@@ -4,7 +4,7 @@ import {
   saveWorkspace,
   seedWorkspacesIfEmpty,
 } from "@/lib/chat-history/indexed-db"
-import type { ChartPoint, WorkspaceRouteConfig } from "@/types/dashboard"
+import type { ChartPoint, IconKey, WorkspaceRouteConfig } from "@/types/dashboard"
 
 interface WorkspaceStoreState {
   isLoaded: boolean
@@ -12,6 +12,7 @@ interface WorkspaceStoreState {
   loadWorkspaces: (seedWorkspaces: WorkspaceRouteConfig[]) => Promise<void>
   createWorkspace: () => Promise<WorkspaceRouteConfig>
   renameWorkspace: (workspaceId: string, title: string) => Promise<void>
+  updateWorkspaceIcon: (workspaceId: string, icon: IconKey) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
 }
 
@@ -119,6 +120,26 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((item) =>
         item.id === workspaceId ? renamedWorkspace : item
+      ),
+    }))
+  },
+
+  updateWorkspaceIcon: async (workspaceId, icon) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace || workspace.navIcon === icon) {
+      return
+    }
+
+    const updatedWorkspace = {
+      ...workspace,
+      navIcon: icon,
+    }
+
+    await saveWorkspace(updatedWorkspace)
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
       ),
     }))
   },
