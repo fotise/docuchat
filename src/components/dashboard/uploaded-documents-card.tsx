@@ -23,13 +23,31 @@ export function UploadedDocumentsCard({
   onDeleteWorkspace,
 }: UploadedDocumentsCardProps) {
   const [statusMessage, setStatusMessage] = useState("")
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
 
   function handleUploadClick() {
+    setIsConfirmingDelete(false)
     setStatusMessage("File upload is not connected yet.")
   }
 
   function handleManageClick() {
+    setIsConfirmingDelete(false)
     setStatusMessage("Workspace document management is not connected yet.")
+  }
+
+  function handleDeleteClick() {
+    setIsConfirmingDelete(true)
+    setStatusMessage("Deleting this workspace will remove its documents and chats.")
+  }
+
+  function handleCancelDelete() {
+    setIsConfirmingDelete(false)
+    setStatusMessage("Workspace deletion cancelled.")
+  }
+
+  function handleConfirmDelete() {
+    setIsConfirmingDelete(false)
+    onDeleteWorkspace?.()
   }
 
   return (
@@ -74,12 +92,46 @@ export function UploadedDocumentsCard({
           <Button
             variant="destructive"
             aria-label={deleteLabel}
-            onClick={onDeleteWorkspace}
+            onClick={handleDeleteClick}
             className="mt-3 w-full rounded-xl border border-rose-400/20 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
           >
             <Trash2 className="mr-2 h-4 w-4" />
             {deleteLabel}
           </Button>
+        ) : null}
+
+        {isConfirmingDelete ? (
+          <div
+            className="mt-3 rounded-xl border border-rose-300/20 bg-rose-950/35 p-3 text-sm text-rose-50"
+            role="alertdialog"
+            aria-label="Confirm workspace deletion"
+          >
+            <p className="font-semibold">Delete this workspace?</p>
+            <p className="mt-1 text-xs text-rose-100/80">
+              This will remove its documents and chats from this device.
+            </p>
+
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                aria-label="Cancel workspace deletion"
+                onClick={handleCancelDelete}
+                className="rounded-lg border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                aria-label="Confirm delete workspace"
+                onClick={handleConfirmDelete}
+                className="rounded-lg border border-rose-300/25 bg-rose-500/20 text-rose-50 hover:bg-rose-500/30"
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
         ) : null}
 
         <p className="mt-3 min-h-4 text-xs text-sky-200/75" role="status">

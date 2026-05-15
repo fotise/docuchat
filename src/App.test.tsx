@@ -183,6 +183,12 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete Workspace" }))
 
+    expect(await screen.findByRole("alertdialog", { name: "Confirm workspace deletion" })).toBeTruthy()
+    expect(screen.getByText("Delete this workspace?")).toBeTruthy()
+    expect(screen.getAllByText("Market Research")).not.toHaveLength(0)
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm delete workspace" }))
+
     expect(await screen.findAllByText("Legal Files")).not.toHaveLength(0)
   })
 })
