@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { dashboardConfig } from "@/config/dashboard"
-import { buildAssistantReply } from "@/lib/mock-chat"
+import { useLlmClient } from "@/lib/llm/context"
 import { useDashboardStore } from "@/store/dashboard-store"
 import type {
   WorkspaceMessage,
@@ -29,7 +29,8 @@ function createMessage(side: "left" | "right", text: string): WorkspaceMessage {
 
 export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const [inputValue, setInputValue] = useState("")
-  const timeoutsRef = useRef<number[]>([])
+  const abortControllersRef = useRef<AbortController[]>([])
+  const llmClient = useLlmClient()
 
   const activeTab = useDashboardStore(
     (state) => state.activeTabByWorkspace[workspace.id] ?? workspace.tabs[0]?.id ?? ""
@@ -46,8 +47,8 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
 
   useEffect(() => {
     return () => {
-      timeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId))
-      timeoutsRef.current = []
+      abortControllersRef.current.forEach((controller) => controller.abort())
+      abortControllersRef.current = []
     }
   }, [])
 
@@ -64,7 +65,7 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const currentMessages = storedMessages ?? currentView.initialMessages
   const isSendDisabled = inputValue.trim().length === 0 || isReplying
 
-  function handleSend() {
+  async function handleSend() {
     const trimmed = inputValue.trim()
 
     if (!trimmed || isReplying) {
@@ -78,11 +79,16 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     setInputValue("")
     setReplying(workspace.id, tabIdAtSend, true)
 
-    const timeoutId = window.setTimeout(() => {
-      const assistantText = buildAssistantReply({
+    const abortController = new AbortController()
+    abortControllersRef.current.push(abortController)
+
+    try {
+      const assistantText = await llmClient.generateReply({
         workspaceTitle: workspace.title,
         tabLabel: tabLabelAtSend,
         prompt: trimmed,
+        messages: currentMessages,
+        signal: abortController.signal,
       })
 
       addMessage(
@@ -90,10 +96,26 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
         tabIdAtSend,
         createMessage("right", assistantText)
       )
-      setReplying(workspace.id, tabIdAtSend, false)
-    }, 700)
+    } catch {
+      if (!abortController.signal.aborted) {
+        addMessage(
+          workspace.id,
+          tabIdAtSend,
+          createMessage(
+            "right",
+            "I couldn't complete that LLM request. Please try again."
+          )
+        )
+      }
+    } finally {
+      abortControllersRef.current = abortControllersRef.current.filter(
+        (controller) => controller !== abortController
+      )
 
-    timeoutsRef.current.push(timeoutId)
+      if (!abortController.signal.aborted) {
+        setReplying(workspace.id, tabIdAtSend, false)
+      }
+    }
   }
 
   return (
@@ -137,7 +159,7 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
             onChange={(event) => setInputValue(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
-                handleSend()
+                void handleSend()
               }
             }}
             placeholder={dashboardConfig.labels.inputPlaceholder}
@@ -145,7 +167,7 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
           />
 
           <Button
-            onClick={handleSend}
+            onClick={() => void handleSend()}
             disabled={isSendDisabled}
             className="h-11 rounded-xl bg-gradient-to-b from-blue-400 to-blue-700 px-6 text-white hover:from-blue-400 hover:to-blue-600 disabled:opacity-60"
           >
