@@ -133,6 +133,33 @@
   }
 }
 
+@layer utilities {
+  .app-scrollbar {
+    scrollbar-color: rgb(96 165 250 / 55%) rgb(15 23 42 / 35%);
+    scrollbar-width: thin;
+  }
+
+  .app-scrollbar::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-track {
+    background: rgb(15 23 42 / 35%);
+    border-radius: 999px;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgb(56 189 248 / 55%), rgb(59 130 246 / 65%));
+    border: 2px solid rgb(15 23 42 / 35%);
+    border-radius: 999px;
+  }
+
+  .app-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgb(125 211 252 / 75%), rgb(96 165 250 / 85%));
+  }
+}
+
 html,
 body,
 #root {

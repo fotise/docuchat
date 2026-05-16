@@ -147,12 +147,17 @@ export function UploadedDocumentsCard({
       </CardHeader>
 
       <CardContent>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-2">
+        <div
+          className="app-scrollbar grid max-h-[354px] grid-cols-2 gap-3 overflow-y-auto overflow-x-visible pr-1 sm:grid-cols-3 xl:grid-cols-2"
+          role="list"
+          aria-label="Workspace files"
+        >
           {documents.map((doc) => (
             <DocumentMiniCard
               key={doc.id}
               name={doc.name}
               tone={doc.tone}
+              size={doc.size}
               toBeProcessed={doc.toBeProcessed}
               processingStatus={doc.processingStatus}
               onClick={() => setSelectedDocument(doc)}

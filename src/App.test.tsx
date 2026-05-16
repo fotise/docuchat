@@ -68,6 +68,31 @@ describe("App", () => {
     expect(screen.getByText("Workspace document management is not connected yet.")).toBeTruthy()
   })
 
+  it("renders fixed file cards with ellipsis, tooltip details, and a scrollable list", async () => {
+    renderApp()
+
+    const filesList = await screen.findByRole("list", { name: "Workspace files" })
+    const fileCard = await screen.findByRole("button", {
+      name: "Open details for Market_Overview.pdf",
+    })
+
+    expect(filesList).toHaveClass("app-scrollbar", "max-h-[354px]", "overflow-y-auto")
+    expect(fileCard).toHaveClass("h-28", "w-full")
+    expect(fileCard.querySelector("div.truncate")).toBeTruthy()
+    expect(fileCard).not.toHaveAttribute("title")
+
+    fireEvent.mouseEnter(fileCard)
+
+    expect(await screen.findByRole("tooltip")).toHaveClass("fixed", "z-[9999]")
+    expect(screen.getByText("Name: Market_Overview.pdf")).toBeTruthy()
+    expect(screen.getByText("Size: Size unavailable")).toBeTruthy()
+    expect(screen.getByText("Status: Processed")).toBeTruthy()
+
+    fireEvent.scroll(filesList)
+
+    expect(screen.queryByRole("tooltip")).toBeNull()
+  })
+
   it("uploads workspace files into IndexedDB", async () => {
     renderApp()
 
@@ -87,6 +112,11 @@ describe("App", () => {
 
     expect(await screen.findByText("Quarterly_Report.pdf")).toBeTruthy()
     expect(await screen.findByText("Uploaded Quarterly_Report.pdf to this workspace.")).toBeTruthy()
+    expect(
+      await screen.findByRole("button", {
+        name: "Open details for Quarterly_Report.pdf",
+      })
+    ).not.toHaveAttribute("title")
 
     const storedDocuments = await getWorkspaceDocuments("market-research")
     const storedDocument = storedDocuments.find(
