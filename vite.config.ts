@@ -7,7 +7,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: {
-    chunkSizeWarningLimit: 900,
+    chunkSizeWarningLimit: 1100,
   },
   resolve: {
     alias: {

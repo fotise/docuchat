@@ -9,6 +9,7 @@ import {
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
+import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import App from "./App"
 
@@ -20,6 +21,11 @@ const testLlmClient: LlmClient = {
   isAvailable: async () => true,
   generateReply: async (input) => {
     lastGenerateReplyInput = input
+
+    if (input.prompt.toLowerCase().includes("markdown")) {
+      return "**Key point**\n\n- First item\n- Second item"
+    }
+
     return `Test LLM reply for: ${input.prompt}`
   },
 }
@@ -57,6 +63,12 @@ afterEach(async () => {
     isLoaded: false,
     isProcessingDocument: false,
     workspaces: [],
+  })
+  useDashboardStore.setState({
+    activeTabByWorkspace: {},
+    messagesByWorkspaceTab: {},
+    loadedByWorkspaceTab: {},
+    replyingByWorkspaceTab: {},
   })
   await clearDocuChatData()
   window.history.pushState({}, "", "/")
@@ -407,6 +419,23 @@ describe("App", () => {
       name: "Market_Overview.pdf",
       type: "pdf",
     })
+  })
+
+  it("renders LLM replies as markdown", async () => {
+    renderApp()
+
+    fireEvent.change(await screen.findByPlaceholderText("Ask something about your documents..."), {
+      target: { value: "Return markdown" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+
+    expect(await screen.findByText("Key point")).toBeTruthy()
+    expect(await screen.findByText("First item")).toBeTruthy()
+    expect(screen.getByText("Key point").tagName).toBe("STRONG")
+    expect(screen.getByText("First item").closest("li")).toBeTruthy()
+    expect(screen.getByText("Key point").closest(".app-scrollbar")).toHaveClass(
+      "overflow-x-auto"
+    )
   })
 
   it("adds workspace date and file context to the Chrome local LLM system prompt", async () => {
