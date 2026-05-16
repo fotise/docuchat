@@ -93,6 +93,28 @@ describe("App", () => {
     expect(screen.queryByRole("tooltip")).toBeNull()
   })
 
+  it("keeps only one file tooltip open at a time", async () => {
+    renderApp()
+
+    const firstFileCard = await screen.findByRole("button", {
+      name: "Open details for Market_Overview.pdf",
+    })
+    const secondFileCard = await screen.findByRole("button", {
+      name: "Open details for Sales_Report.docx",
+    })
+
+    fireEvent.mouseEnter(firstFileCard)
+
+    expect(await screen.findByRole("tooltip")).toBeTruthy()
+    expect(screen.getByText("Name: Market_Overview.pdf")).toBeTruthy()
+
+    fireEvent.mouseEnter(secondFileCard)
+
+    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+    expect(screen.queryByText("Name: Market_Overview.pdf")).toBeNull()
+    expect(screen.getByText("Name: Sales_Report.docx")).toBeTruthy()
+  })
+
   it("uploads workspace files into IndexedDB", async () => {
     renderApp()
 
@@ -231,6 +253,11 @@ describe("App", () => {
 
     expect(processedDocument?.processingStatus).toBe("processed")
     expect(processedDocument?.tone).toBe("blue")
+    expect(
+      screen.queryByRole("progressbar", {
+        name: "Market Research file processing progress",
+      })
+    ).toBeNull()
   })
 
   it("requeues a file when worker processing fails", async () => {
@@ -330,6 +357,12 @@ describe("App", () => {
     expect(screen.getByText("File details")).toBeTruthy()
     expect(screen.getAllByText("Delete_Me.pdf")).not.toHaveLength(0)
     expect(screen.getByText("9 B")).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Close file details" }))
+
+    expect(screen.queryByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeNull()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
 
     fireEvent.keyDown(document, { key: "Escape" })
 
@@ -483,6 +516,18 @@ describe("App", () => {
 
     expect(await screen.findAllByText("Market Research")).not.toHaveLength(0)
 
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["cascade"], "Cascade_Delete.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Cascade_Delete.pdf")).toBeTruthy()
+
     fireEvent.click(await screen.findByRole("button", { name: "Delete Workspace" }))
 
     expect(await screen.findByRole("alertdialog", { name: "Confirm workspace deletion" })).toBeTruthy()
@@ -492,5 +537,13 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm delete workspace" }))
 
     expect(await screen.findAllByText("Legal Files")).not.toHaveLength(0)
+
+    await waitFor(async () => {
+      const storedDocuments = await getWorkspaceDocuments("market-research")
+
+      expect(
+        storedDocuments.some((document) => document.name === "Cascade_Delete.pdf")
+      ).toBe(false)
+    })
   })
 })
