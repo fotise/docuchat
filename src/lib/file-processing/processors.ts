@@ -8,6 +8,10 @@ import {
   type ParentChildChunkOptions,
   type ParentChunk,
 } from "./chunking"
+import {
+  generateEmbeddings,
+  type GeneratedEmbedding,
+} from "./embeddings"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
 export type FileProcessorKind =
@@ -31,6 +35,7 @@ export interface FileProcessingResult {
   byteLength: number
   processor: FileProcessorKind
   childChunkCount?: number
+  embeddingCount?: number
   pageCount?: number
   parentChunkCount?: number
 }
@@ -39,6 +44,7 @@ type FileProcessor = (job: FileProcessingJob) => Promise<FileProcessingResult>
 
 interface PdfPipelineOptions extends ParentChildChunkOptions {
   extractTextByPage?: (content: ArrayBuffer) => Promise<PageText[]>
+  generateEmbeddings?: (texts: string[]) => Promise<GeneratedEmbedding[]>
 }
 
 interface PdfJsTextContent {
@@ -166,10 +172,12 @@ async function extractPdfTextByPage(content: ArrayBuffer) {
 function flattenChunks(
   workspaceId: string,
   documentId: string,
-  parents: ParentChunk[]
+  parents: ParentChunk[],
+  childEmbeddings: GeneratedEmbedding[]
 ) {
   const now = Date.now()
   const chunks: StoredDocumentChunk[] = []
+  let childEmbeddingIndex = 0
 
   for (const parent of parents) {
     chunks.push({
@@ -185,11 +193,16 @@ function flattenChunks(
     })
 
     for (const child of parent.children) {
+      const generatedEmbedding = childEmbeddings[childEmbeddingIndex]
+
       chunks.push({
         id: child.id,
         workspaceId,
         documentId,
         chunkId: child.id,
+        embedding: generatedEmbedding?.embedding,
+        embeddingDimensions: generatedEmbedding?.dimensions,
+        embeddingModel: generatedEmbedding?.model,
         parentChunkId: parent.id,
         level: "child",
         text: child.text,
@@ -197,6 +210,7 @@ function flattenChunks(
         order: chunks.length,
         createdAt: now,
       })
+      childEmbeddingIndex += 1
     }
   }
 
@@ -223,9 +237,20 @@ export async function processPdfPipeline(
     ...options,
     idPrefix: options.idPrefix ?? job.documentId,
   })
-  const storedChunks = flattenChunks(job.workspaceId, job.documentId, parentChunks)
+  const childChunks = parentChunks.flatMap((parent) => parent.children)
 
-  // Step 3: persist the searchable chunk index in IndexedDB.
+  // Step 3: generate embeddings for every child chunk inside the worker.
+  const childEmbeddings = await (options.generateEmbeddings ?? generateEmbeddings)(
+    childChunks.map((child) => child.text)
+  )
+  const storedChunks = flattenChunks(
+    job.workspaceId,
+    job.documentId,
+    parentChunks,
+    childEmbeddings
+  )
+
+  // Step 4: persist the searchable chunk index and embeddings in IndexedDB.
   await replaceDocumentChunks(job.workspaceId, job.documentId, storedChunks)
 
   return {
@@ -234,6 +259,7 @@ export async function processPdfPipeline(
       (total, parent) => total + parent.children.length,
       0
     ),
+    embeddingCount: childEmbeddings.length,
     pageCount: pages.length,
     parentChunkCount: parentChunks.length,
     processor: "pdf",

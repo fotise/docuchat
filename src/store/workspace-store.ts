@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import {
   addWorkspaceDocuments,
+  deleteDocumentChunks,
   deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
   deleteWorkspace as deleteStoredWorkspace,
   getWorkspaceDocument,
@@ -26,6 +27,7 @@ interface FileProcessingWorkerResult {
   processingStatus: FileProcessingStatus
   childChunkCount?: number
   chunkCount?: number
+  embeddingCount?: number
   errorMessage?: string
   pageCount?: number
   parentChunkCount?: number
@@ -54,6 +56,7 @@ interface WorkspaceStoreState {
   processNextWorkspaceDocument: (
     workerFactory?: FileProcessingWorkerFactory
   ) => Promise<boolean>
+  reprocessWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
 }
@@ -528,6 +531,56 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }
 
     return true
+  },
+
+  reprocessWorkspaceDocument: async (workspaceId, documentId) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const document = workspace.uploadedDocuments.find((item) => item.id === documentId)
+
+    if (!document) {
+      return
+    }
+
+    const updatedWorkspace = updateWorkspaceDocumentState(
+      workspace,
+      documentId,
+      "toBeProcessed",
+      {
+        childChunkCount: undefined,
+        chunkCount: undefined,
+        pageCount: undefined,
+        parentChunkCount: undefined,
+      }
+    )
+    const storedDocument = await getWorkspaceDocument(documentId)
+
+    await deleteDocumentChunks(documentId)
+
+    if (storedDocument) {
+      await updateStoredWorkspaceDocument({
+        ...storedDocument,
+        childChunkCount: undefined,
+        chunkCount: undefined,
+        pageCount: undefined,
+        parentChunkCount: undefined,
+        tone: "gray",
+        toBeProcessed: true,
+        processingStatus: "toBeProcessed",
+      })
+    }
+
+    await saveWorkspace(updatedWorkspace)
+
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
   },
 
   deleteWorkspaceDocument: async (workspaceId, documentId) => {

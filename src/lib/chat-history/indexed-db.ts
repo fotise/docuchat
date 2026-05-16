@@ -36,6 +36,9 @@ export interface StoredDocumentChunk {
   level: "parent" | "child"
   text: string
   pageNumbers: number[]
+  embedding?: number[]
+  embeddingDimensions?: number
+  embeddingModel?: string
   order: number
   createdAt: number
 }
@@ -317,6 +320,18 @@ export async function replaceDocumentChunks(
       documentId,
       createdAt: chunk.createdAt || now,
     })
+  }
+
+  await tx.done
+}
+
+export async function deleteDocumentChunks(documentId: string) {
+  const db = await getDb()
+  const tx = db.transaction(DOCUMENT_CHUNK_STORE, "readwrite")
+  const documentIndex = tx.store.index("documentId")
+
+  for await (const cursor of documentIndex.iterate(documentId)) {
+    await cursor.delete()
   }
 
   await tx.done

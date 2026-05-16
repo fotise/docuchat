@@ -6,6 +6,7 @@ import {
   clearDocuChatData,
   getDocumentChunks,
   getWorkspaceDocuments,
+  replaceDocumentChunks,
 } from "@/lib/chat-history/indexed-db"
 import { createParentChildChunks } from "@/lib/file-processing/chunking"
 import {
@@ -535,6 +536,12 @@ describe("App", () => {
             text: "Page two covers churn risk and expansion opportunities.",
           },
         ],
+        generateEmbeddings: async (texts) =>
+          texts.map((_, index) => ({
+            dimensions: 3,
+            embedding: [index, index + 0.1, index + 0.2],
+            model: "test-embedding-model",
+          })),
         parentChunkOverlap: 0,
         parentChunkSize: 80,
       }
@@ -543,6 +550,7 @@ describe("App", () => {
     expect(result).toMatchObject({
       byteLength: 8,
       childChunkCount: 6,
+      embeddingCount: 6,
       pageCount: 2,
       parentChunkCount: 2,
       processor: "pdf",
@@ -557,11 +565,17 @@ describe("App", () => {
       text: "Page one explains revenue growth and retention signals.",
     })
     expect(chunks[1]).toMatchObject({
+      embedding: [0, 0.1, 0.2],
+      embeddingDimensions: 3,
+      embeddingModel: "test-embedding-model",
       level: "child",
       pageNumbers: [1],
       parentChunkId: "pdf-pipeline-test:parent:0",
     })
     expect(chunks.at(-1)).toMatchObject({
+      embedding: [5, 5.1, 5.2],
+      embeddingDimensions: 3,
+      embeddingModel: "test-embedding-model",
       level: "child",
       pageNumbers: [2],
       parentChunkId: "pdf-pipeline-test:parent:1",
@@ -644,6 +658,38 @@ describe("App", () => {
       target: { files: [file] },
     })
 
+    await screen.findByText("Uploaded Delete_Me.pdf to this workspace.")
+
+    const uploadedDocument = await waitFor(async () => {
+      const uploadedDocuments = await getWorkspaceDocuments("market-research")
+      const document = uploadedDocuments.find(
+        (workspaceDocument) => workspaceDocument.name === "Delete_Me.pdf"
+      )
+
+      expect(document).toBeTruthy()
+      return document
+    })
+
+    await replaceDocumentChunks(
+      "market-research",
+      uploadedDocument.id,
+      Array.from({ length: 12 }, (_, index) => ({
+        id: `delete-me:child:${index}`,
+        workspaceId: "market-research",
+        documentId: uploadedDocument.id,
+        chunkId: `delete-me:child:${index}`,
+        parentChunkId: "delete-me:parent:0",
+        level: "child" as const,
+        text: `Chunk ${index + 1} text about market retention and revenue.`,
+        pageNumbers: [Math.floor(index / 4) + 1],
+        embedding: [index, index + 0.25, index + 0.5, index + 0.75, index + 1],
+        embeddingDimensions: 5,
+        embeddingModel: "test-embedding-model",
+        order: index,
+        createdAt: Date.now() + index,
+      }))
+    )
+
     fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
 
     expect(await screen.findByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeTruthy()
@@ -652,6 +698,48 @@ describe("App", () => {
     expect(screen.getByText("9 B")).toBeTruthy()
     expect(screen.getByText("Chunks")).toBeTruthy()
     expect(screen.getAllByText("Unavailable")).not.toHaveLength(0)
+
+    expect(await screen.findByRole("table", { name: "Document chunks table" })).toBeTruthy()
+    expect(await screen.findByText("Showing 1-10 of 12 chunks")).toBeTruthy()
+    expect(screen.getByText("delete-me:child:0")).toBeTruthy()
+    expect(screen.getByText("delete-me:child:9")).toBeTruthy()
+    expect(screen.queryByText("delete-me:child:10")).toBeNull()
+    expect(screen.getAllByText("test-embedding-model")).toHaveLength(10)
+    expect(screen.getByText("[0.000, 0.250, 0.500, 0.750, …]")).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Next chunks page" }))
+
+    expect(await screen.findByText("Showing 11-12 of 12 chunks")).toBeTruthy()
+    expect(screen.getByText("delete-me:child:10")).toBeTruthy()
+    expect(screen.getByText("delete-me:child:11")).toBeTruthy()
+    expect(screen.queryByText("delete-me:child:9")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Reprocess Delete_Me.pdf" }))
+
+    await waitFor(async () => {
+      expect(await getDocumentChunks(uploadedDocument.id)).toHaveLength(0)
+    })
+
+    await waitFor(async () => {
+      const storedDocuments = await getWorkspaceDocuments("market-research")
+      const storedDocument = storedDocuments.find(
+        (workspaceDocument) => workspaceDocument.id === uploadedDocument.id
+      )
+
+      expect(storedDocument).toMatchObject({
+        processingStatus: "toBeProcessed",
+        toBeProcessed: true,
+        tone: "gray",
+      })
+      expect(storedDocument?.chunkCount).toBeUndefined()
+      expect(storedDocument?.childChunkCount).toBeUndefined()
+      expect(storedDocument?.parentChunkCount).toBeUndefined()
+      expect(storedDocument?.pageCount).toBeUndefined()
+    })
+
+    expect(await screen.findByText("The table will populate after file processing completes.")).toBeTruthy()
+    expect(screen.getByText("Delete_Me.pdf is queued for reprocessing.")).toBeTruthy()
+    expect(screen.queryByText("delete-me:child:10")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Close file details" }))
 

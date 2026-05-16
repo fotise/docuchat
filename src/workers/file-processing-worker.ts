@@ -33,6 +33,7 @@ self.onmessage = async (event: MessageEvent<FileProcessingRequest>) => {
       chunkCount: result.parentChunkCount !== undefined || result.childChunkCount !== undefined
         ? (result.parentChunkCount ?? 0) + (result.childChunkCount ?? 0)
         : undefined,
+      embeddingCount: result.embeddingCount,
       pageCount: result.pageCount,
       parentChunkCount: result.parentChunkCount,
       processor: result.processor,
