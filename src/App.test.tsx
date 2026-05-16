@@ -4,9 +4,13 @@ import { LlmProvider } from "@/components/llm/llm-provider"
 import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
 import {
   clearDocuChatData,
+  getDocumentChunks,
   getWorkspaceDocuments,
 } from "@/lib/chat-history/indexed-db"
-import { processWorkspaceFile } from "@/lib/file-processing/processors"
+import {
+  getFileProcessorKind,
+  processPdfPipeline,
+} from "@/lib/file-processing/processors"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
@@ -15,6 +19,7 @@ import { useWorkspaceStore } from "@/store/workspace-store"
 import App from "./App"
 
 let lastGenerateReplyInput: GenerateReplyInput | null = null
+const FILE_PROCESSING_RESULT_MESSAGE = "docuchat:file-processing-result"
 
 const testLlmClient: LlmClient = {
   id: "test-llm",
@@ -109,6 +114,7 @@ describe("App", () => {
     expect(screen.getByText("Name: Market_Overview.pdf")).toBeTruthy()
     expect(screen.getByText("Size: Size unavailable")).toBeTruthy()
     expect(screen.getByText("Status: Processed")).toBeTruthy()
+    expect(screen.getByText("Chunks: Unavailable")).toBeTruthy()
 
     fireEvent.scroll(filesList)
 
@@ -251,8 +257,13 @@ describe("App", () => {
 
     worker.onmessage?.({
       data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
         workspaceId: "market-research",
         documentId: processingDocument?.id,
+        childChunkCount: 5,
+        chunkCount: 7,
+        pageCount: 2,
+        parentChunkCount: 2,
         processingStatus: "processed",
       },
     } as MessageEvent)
@@ -267,6 +278,10 @@ describe("App", () => {
       expect(document?.processingStatus).toBe("processed")
       expect(document?.toBeProcessed).toBe(false)
       expect(document?.tone).toBe("blue")
+      expect(document?.chunkCount).toBe(7)
+      expect(document?.parentChunkCount).toBe(2)
+      expect(document?.childChunkCount).toBe(5)
+      expect(document?.pageCount).toBe(2)
     })
 
     expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
@@ -278,6 +293,7 @@ describe("App", () => {
 
     expect(processedDocument?.processingStatus).toBe("processed")
     expect(processedDocument?.tone).toBe("blue")
+    expect(processedDocument?.chunkCount).toBe(7)
     expect(
       screen.queryByRole("progressbar", {
         name: "Market Research file processing progress",
@@ -285,7 +301,7 @@ describe("App", () => {
     ).toBeNull()
   })
 
-  it("requeues a file when worker processing fails", async () => {
+  it("marks a file as error when worker processing fails", async () => {
     renderApp()
 
     const worker = createControlledProcessingWorker()
@@ -316,14 +332,23 @@ describe("App", () => {
           (item) => item.name === "Retry_Me.pdf"
         )
 
-      expect(document?.processingStatus).toBe("toBeProcessed")
-      expect(document?.toBeProcessed).toBe(true)
+      expect(document?.processingStatus).toBe("error")
+      expect(document?.toBeProcessed).toBe(false)
+      expect(document?.tone).toBe("red")
     })
 
     expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
+
+    const storedDocuments = await getWorkspaceDocuments("market-research")
+    const storedDocument = storedDocuments.find(
+      (document) => document.name === "Retry_Me.pdf"
+    )
+
+    expect(storedDocument?.processingStatus).toBe("error")
+    expect(storedDocument?.tone).toBe("red")
   })
 
-  it("requeues a file when the worker reports an unprocessed result", async () => {
+  it("marks a file as error when the worker reports a failed result", async () => {
     renderApp()
 
     const worker = createControlledProcessingWorker()
@@ -352,10 +377,11 @@ describe("App", () => {
 
     worker.onmessage?.({
       data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
         workspaceId: "market-research",
         documentId: processingDocument?.id,
         errorMessage: "Unsupported file contents",
-        processingStatus: "toBeProcessed",
+        processingStatus: "error",
       },
     } as MessageEvent)
 
@@ -366,12 +392,63 @@ describe("App", () => {
           (item) => item.name === "Retry_Result.pdf"
         )
 
-      expect(document?.processingStatus).toBe("toBeProcessed")
-      expect(document?.toBeProcessed).toBe(true)
-      expect(document?.tone).toBe("gray")
+      expect(document?.processingStatus).toBe("error")
+      expect(document?.toBeProcessed).toBe(false)
+      expect(document?.tone).toBe("red")
     })
 
     expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
+
+    const erroredFileCard = await screen.findByRole("button", {
+      name: "Open details for Retry_Result.pdf",
+    })
+
+    fireEvent.mouseEnter(erroredFileCard)
+
+    expect(await screen.findByText("Status: Error")).toBeTruthy()
+  })
+
+  it("ignores unrelated worker messages while a file remains processing", async () => {
+    renderApp()
+
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["ignore me"], "Ignore_Message.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Ignore_Message.pdf")).toBeTruthy()
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+
+    worker.onmessage?.({
+      data: {
+        source: "pdfjs-internal",
+        status: "ready",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Ignore_Message.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("processing")
+      expect(document?.tone).toBe("gray")
+    })
+
+    expect(useWorkspaceStore.getState().isProcessingDocument).toBe(true)
   })
 
   it("does not start another worker while a file is processing", async () => {
@@ -417,31 +494,77 @@ describe("App", () => {
   })
 
   it("selects a file processor from the document extension", async () => {
-    await expect(
-      processWorkspaceFile({ fileName: "Report.PDF", content: new ArrayBuffer(12) })
-    ).resolves.toMatchObject({ byteLength: 12, processor: "pdf" })
-    await expect(
-      processWorkspaceFile({ fileName: "Contract.docx" })
-    ).resolves.toMatchObject({ processor: "word" })
-    await expect(
-      processWorkspaceFile({ fileName: "Metrics.xlsx" })
-    ).resolves.toMatchObject({ processor: "spreadsheet" })
-    await expect(
-      processWorkspaceFile({ fileName: "Slides.pptx" })
-    ).resolves.toMatchObject({ processor: "presentation" })
-    await expect(
-      processWorkspaceFile({ fileName: "Notes.md" })
-    ).resolves.toMatchObject({ processor: "text" })
-    await expect(
-      processWorkspaceFile({ fileName: "Archive.zip" })
-    ).resolves.toMatchObject({ processor: "generic" })
-    await expect(
-      processWorkspaceFile({
+    expect(getFileProcessorKind({ fileName: "Report.PDF" })).toBe("pdf")
+    expect(getFileProcessorKind({ fileName: "Contract.docx" })).toBe("word")
+    expect(getFileProcessorKind({ fileName: "Metrics.xlsx" })).toBe("spreadsheet")
+    expect(getFileProcessorKind({ fileName: "Slides.pptx" })).toBe("presentation")
+    expect(getFileProcessorKind({ fileName: "Notes.md" })).toBe("text")
+    expect(getFileProcessorKind({ fileName: "Archive.zip" })).toBe("generic")
+    expect(
+      getFileProcessorKind({
         fileName: "download",
         fileType: "application/pdf",
         mimeType: "application/pdf",
       })
-    ).resolves.toMatchObject({ processor: "pdf" })
+    ).toBe("pdf")
+  })
+
+  it("runs the PDF pipeline with page-aware parent child chunks in IndexedDB", async () => {
+    const content = new ArrayBuffer(8)
+
+    const result = await processPdfPipeline(
+      {
+        workspaceId: "market-research",
+        documentId: "pdf-pipeline-test",
+        fileName: "Pipeline.pdf",
+        fileType: "pdf",
+        mimeType: "application/pdf",
+        content,
+      },
+      {
+        childChunkOverlap: 0,
+        childChunkSize: 24,
+        extractTextByPage: async () => [
+          {
+            pageNumber: 1,
+            text: "Page one explains revenue growth and retention signals.",
+          },
+          {
+            pageNumber: 2,
+            text: "Page two covers churn risk and expansion opportunities.",
+          },
+        ],
+        parentChunkOverlap: 0,
+        parentChunkSize: 80,
+      }
+    )
+
+    expect(result).toMatchObject({
+      byteLength: 8,
+      childChunkCount: 6,
+      pageCount: 2,
+      parentChunkCount: 2,
+      processor: "pdf",
+    })
+
+    const chunks = await getDocumentChunks("pdf-pipeline-test")
+
+    expect(chunks).toHaveLength(8)
+    expect(chunks[0]).toMatchObject({
+      level: "parent",
+      pageNumbers: [1],
+      text: "Page one explains revenue growth and retention signals.",
+    })
+    expect(chunks[1]).toMatchObject({
+      level: "child",
+      pageNumbers: [1],
+      parentChunkId: "pdf-pipeline-test:parent:0",
+    })
+    expect(chunks.at(-1)).toMatchObject({
+      level: "child",
+      pageNumbers: [2],
+      parentChunkId: "pdf-pipeline-test:parent:1",
+    })
   })
 
   it("opens file details and deletes a workspace file", async () => {
@@ -461,6 +584,8 @@ describe("App", () => {
     expect(screen.getByText("File details")).toBeTruthy()
     expect(screen.getAllByText("Delete_Me.pdf")).not.toHaveLength(0)
     expect(screen.getByText("9 B")).toBeTruthy()
+    expect(screen.getByText("Chunks")).toBeTruthy()
+    expect(screen.getAllByText("Unavailable")).not.toHaveLength(0)
 
     fireEvent.click(screen.getByRole("button", { name: "Close file details" }))
 

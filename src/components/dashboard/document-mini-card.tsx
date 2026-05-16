@@ -5,7 +5,14 @@ import { FilePreviewIcon } from "./file-preview-icon"
 
 type DocumentMiniCardProps = Pick<
   UploadedDocument,
-  "name" | "tone" | "toBeProcessed" | "processingStatus" | "size"
+  | "childChunkCount"
+  | "chunkCount"
+  | "name"
+  | "parentChunkCount"
+  | "processingStatus"
+  | "size"
+  | "tone"
+  | "toBeProcessed"
 > & {
   onClick?: () => void
 }
@@ -36,6 +43,10 @@ function getStatusLabel(
     return "Processing"
   }
 
+  if (processingStatus === "error") {
+    return "Error"
+  }
+
   if (processingStatus === "toBeProcessed" || toBeProcessed) {
     return "To be processed"
   }
@@ -44,7 +55,10 @@ function getStatusLabel(
 }
 
 export function DocumentMiniCard({
+  childChunkCount,
+  chunkCount,
   name,
+  parentChunkCount,
   size,
   toBeProcessed,
   processingStatus,
@@ -58,9 +72,14 @@ export function DocumentMiniCard({
     top: number
   } | null>(null)
   const displayTone =
-    toBeProcessed || processingStatus === "processing" ? "gray" : "blue"
+    processingStatus === "error"
+      ? "red"
+      : toBeProcessed || processingStatus === "processing"
+        ? "gray"
+        : "blue"
   const sizeLabel = formatFileSize(size)
   const statusLabel = getStatusLabel(processingStatus, toBeProcessed)
+  const chunksLabel = typeof chunkCount === "number" ? chunkCount : "Unavailable"
 
   function updateTooltipPosition() {
     const card = cardRef.current
@@ -157,6 +176,12 @@ export function DocumentMiniCard({
               <span className="block truncate">Name: {name}</span>
               <span className="mt-1 block">Size: {sizeLabel}</span>
               <span className="mt-1 block">Status: {statusLabel}</span>
+              <span className="mt-1 block">Chunks: {chunksLabel}</span>
+              {typeof parentChunkCount === "number" || typeof childChunkCount === "number" ? (
+                <span className="mt-1 block">
+                  Parent/child: {parentChunkCount ?? 0}/{childChunkCount ?? 0}
+                </span>
+              ) : null}
             </div>,
             document.body
           )

@@ -17,11 +17,18 @@ import type {
   WorkspaceRouteConfig,
 } from "@/types/dashboard"
 
+const FILE_PROCESSING_RESULT_MESSAGE = "docuchat:file-processing-result"
+
 interface FileProcessingWorkerResult {
+  type: typeof FILE_PROCESSING_RESULT_MESSAGE
   workspaceId: string
   documentId: string
   processingStatus: FileProcessingStatus
+  childChunkCount?: number
+  chunkCount?: number
   errorMessage?: string
+  pageCount?: number
+  parentChunkCount?: number
 }
 
 interface FileProcessingWorkerRequest {
@@ -126,7 +133,11 @@ function getDocumentProcessingStatus(document: UploadedDocument) {
 function updateWorkspaceDocumentState(
   workspace: WorkspaceRouteConfig,
   documentId: string,
-  processingStatus: FileProcessingStatus
+  processingStatus: FileProcessingStatus,
+  metadata: Pick<
+    UploadedDocument,
+    "childChunkCount" | "chunkCount" | "pageCount" | "parentChunkCount"
+  > = {}
 ) {
   return {
     ...workspace,
@@ -134,9 +145,15 @@ function updateWorkspaceDocumentState(
       document.id === documentId
         ? {
             ...document,
-            tone: processingStatus === "processed" ? "blue" : "gray",
+            tone:
+              processingStatus === "processed"
+                ? "blue"
+                : processingStatus === "error"
+                  ? "red"
+                  : "gray",
             toBeProcessed: processingStatus === "toBeProcessed",
             processingStatus,
+            ...metadata,
           }
         : document
     ),
@@ -149,6 +166,22 @@ function hasProcessingDocument(workspaces: WorkspaceRouteConfig[]) {
       (document) => getDocumentProcessingStatus(document) === "processing"
     )
   )
+}
+
+function getWorkerErrorMessage(event: Event) {
+  return event instanceof ErrorEvent && event.message
+    ? event.message
+    : "File processing worker failed"
+}
+
+function isFileProcessingWorkerResult(
+  value: unknown
+): value is FileProcessingWorkerResult {
+  if (typeof value !== "object" || value === null) {
+    return false
+  }
+
+  return (value as Partial<FileProcessingWorkerResult>).type === FILE_PROCESSING_RESULT_MESSAGE
 }
 
 function buildNewWorkspace(existingWorkspaces: WorkspaceRouteConfig[]) {
@@ -346,7 +379,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
     const worker = workerFactory?.() ?? createFileProcessingWorker()
 
-    async function requeueProcessingDocument() {
+    async function markProcessingDocumentError() {
       const currentWorkspace = get().workspaces.find(
         (item) => item.id === processingWorkspaceId
       )
@@ -356,54 +389,88 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         return
       }
 
-      const requeuedWorkspace = updateWorkspaceDocumentState(
+      const errorWorkspace = updateWorkspaceDocumentState(
         currentWorkspace,
         processingDocumentId,
-        "toBeProcessed"
+        "error"
       )
       const currentStoredDocument = await getWorkspaceDocument(processingDocumentId)
 
       if (currentStoredDocument) {
         await updateStoredWorkspaceDocument({
           ...currentStoredDocument,
-          tone: "gray",
-          toBeProcessed: true,
-          processingStatus: "toBeProcessed",
+          tone: "red",
+          toBeProcessed: false,
+          processingStatus: "error",
         })
       }
 
-      await saveWorkspace(requeuedWorkspace)
+      await saveWorkspace(errorWorkspace)
       set((state) => ({
         isProcessingDocument: false,
         workspaces: state.workspaces.map((item) =>
-          item.id === processingWorkspaceId ? requeuedWorkspace : item
+          item.id === processingWorkspaceId ? errorWorkspace : item
         ),
       }))
     }
 
-    worker.onerror = () => {
-      void requeueProcessingDocument()
+    worker.onerror = (event) => {
+      console.error("[DocuChat] File processing worker error", {
+        documentId: processingDocumentId,
+        errorMessage: getWorkerErrorMessage(event),
+        fileName: document.name,
+        workspaceId: processingWorkspaceId,
+      })
+
+      void markProcessingDocumentError()
       worker.terminate()
     }
 
-    worker.onmessage = async (event: MessageEvent<FileProcessingWorkerResult>) => {
-      if (event.data.documentId !== processingDocumentId) {
-        await requeueProcessingDocument()
+    worker.onmessage = async (event: MessageEvent<unknown>) => {
+      if (!isFileProcessingWorkerResult(event.data)) {
+        return
+      }
+
+      const result = event.data
+
+      if (result.documentId !== processingDocumentId) {
+        console.error("[DocuChat] File processing worker returned an unexpected document", {
+          expectedDocumentId: processingDocumentId,
+          fileName: document.name,
+          receivedDocumentId: result.documentId,
+          workspaceId: result.workspaceId,
+        })
+
+        await markProcessingDocumentError()
         worker.terminate()
         return
       }
 
-      if (event.data.processingStatus !== "processed") {
-        await requeueProcessingDocument()
+      if (result.processingStatus !== "processed") {
+        console.error("[DocuChat] File processing pipeline returned an error", {
+          documentId: result.documentId,
+          errorMessage: result.errorMessage ?? "File processing failed",
+          fileName: document.name,
+          status: result.processingStatus,
+          workspaceId: result.workspaceId,
+        })
+
+        await markProcessingDocumentError()
         worker.terminate()
         return
       }
 
       const currentWorkspace = get().workspaces.find(
-        (item) => item.id === event.data.workspaceId
+        (item) => item.id === result.workspaceId
       )
 
       if (!currentWorkspace) {
+        console.error("[DocuChat] Processed file workspace was not found", {
+          documentId: result.documentId,
+          fileName: document.name,
+          workspaceId: result.workspaceId,
+        })
+
         set({ isProcessingDocument: false })
         worker.terminate()
         return
@@ -411,14 +478,24 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
       const processedWorkspace = updateWorkspaceDocumentState(
         currentWorkspace,
-        event.data.documentId,
-        "processed"
+        result.documentId,
+        "processed",
+        {
+          childChunkCount: result.childChunkCount,
+          chunkCount: result.chunkCount,
+          pageCount: result.pageCount,
+          parentChunkCount: result.parentChunkCount,
+        }
       )
-      const currentStoredDocument = await getWorkspaceDocument(event.data.documentId)
+      const currentStoredDocument = await getWorkspaceDocument(result.documentId)
 
       if (currentStoredDocument) {
         await updateStoredWorkspaceDocument({
           ...currentStoredDocument,
+          childChunkCount: result.childChunkCount,
+          chunkCount: result.chunkCount,
+          pageCount: result.pageCount,
+          parentChunkCount: result.parentChunkCount,
           tone: "blue",
           toBeProcessed: false,
           processingStatus: "processed",
@@ -429,7 +506,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       set((state) => ({
         isProcessingDocument: false,
         workspaces: state.workspaces.map((item) =>
-          item.id === event.data.workspaceId ? processedWorkspace : item
+          item.id === result.workspaceId ? processedWorkspace : item
         ),
       }))
       worker.terminate()

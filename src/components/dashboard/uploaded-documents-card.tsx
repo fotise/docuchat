@@ -135,10 +135,16 @@ export function UploadedDocumentsCard({
     return `${(size / (1024 * 1024)).toFixed(1)} MB`
   }
 
+  function formatCount(value?: number) {
+    return typeof value === "number" ? value.toLocaleString() : "Unavailable"
+  }
+
   function getDisplayTone(document: UploadedDocument) {
-    return document.toBeProcessed || document.processingStatus === "processing"
-      ? "gray"
-      : "blue"
+    if (document.processingStatus === "error") {
+      return "red"
+    }
+
+    return document.toBeProcessed || document.processingStatus === "processing" ? "gray" : "blue"
   }
 
   return (
@@ -158,7 +164,10 @@ export function UploadedDocumentsCard({
           {documents.map((doc) => (
             <DocumentMiniCard
               key={doc.id}
+              childChunkCount={doc.childChunkCount}
+              chunkCount={doc.chunkCount}
               name={doc.name}
+              parentChunkCount={doc.parentChunkCount}
               tone={doc.tone}
               size={doc.size}
               toBeProcessed={doc.toBeProcessed}
@@ -270,6 +279,40 @@ export function UploadedDocumentsCard({
                   <p className="mt-2 text-sm text-slate-300">
                     {formatFileSize(selectedDocument.size)}
                   </p>
+                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                        Chunks
+                      </dt>
+                      <dd className="mt-1 font-bold text-slate-50">
+                        {formatCount(selectedDocument.chunkCount)}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                        Pages
+                      </dt>
+                      <dd className="mt-1 font-bold text-slate-50">
+                        {formatCount(selectedDocument.pageCount)}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                        Parent chunks
+                      </dt>
+                      <dd className="mt-1 font-bold text-slate-50">
+                        {formatCount(selectedDocument.parentChunkCount)}
+                      </dd>
+                    </div>
+                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                        Child chunks
+                      </dt>
+                      <dd className="mt-1 font-bold text-slate-50">
+                        {formatCount(selectedDocument.childChunkCount)}
+                      </dd>
+                    </div>
+                  </dl>
                 </div>
               </div>
             </div>

@@ -7,10 +7,11 @@ import type {
 } from "@/types/dashboard"
 
 const DB_NAME = "docuchat"
-const DB_VERSION = 3
+const DB_VERSION = 4
 const MESSAGE_STORE = "messages"
 const WORKSPACE_STORE = "workspaces"
 const DOCUMENT_STORE = "documents"
+const DOCUMENT_CHUNK_STORE = "documentChunks"
 const MESSAGE_LIMIT = 100
 
 export interface StoredChatMessage extends WorkspaceMessage {
@@ -24,6 +25,19 @@ export interface StoredWorkspaceDocument extends UploadedDocument {
   mimeType: string
   blob: Blob
   content: ArrayBuffer
+}
+
+export interface StoredDocumentChunk {
+  id: string
+  workspaceId: string
+  documentId: string
+  chunkId: string
+  parentChunkId?: string
+  level: "parent" | "child"
+  text: string
+  pageNumbers: number[]
+  order: number
+  createdAt: number
 }
 
 interface DocuChatDb extends DBSchema {
@@ -50,6 +64,15 @@ interface DocuChatDb extends DBSchema {
     indexes: {
       workspaceId: string
       uploadedAt: number
+    }
+  }
+  documentChunks: {
+    key: string
+    value: StoredDocumentChunk
+    indexes: {
+      workspaceId: string
+      documentId: string
+      byDocumentOrder: [string, number]
     }
   }
 }
@@ -89,6 +112,16 @@ function getDb() {
 
         documentsStore.createIndex("workspaceId", "workspaceId")
         documentsStore.createIndex("uploadedAt", "uploadedAt")
+      }
+
+      if (!db.objectStoreNames.contains(DOCUMENT_CHUNK_STORE)) {
+        const chunksStore = db.createObjectStore(DOCUMENT_CHUNK_STORE, {
+          keyPath: "id",
+        })
+
+        chunksStore.createIndex("workspaceId", "workspaceId")
+        chunksStore.createIndex("documentId", "documentId")
+        chunksStore.createIndex("byDocumentOrder", ["documentId", "order"])
       }
     },
   })
@@ -252,6 +285,43 @@ export async function getWorkspaceDocument(documentId: string) {
   return db.get(DOCUMENT_STORE, documentId)
 }
 
+export async function getDocumentChunks(documentId: string) {
+  const db = await getDb()
+  const range = IDBKeyRange.bound(
+    [documentId, 0],
+    [documentId, Number.MAX_SAFE_INTEGER]
+  )
+
+  return db.getAllFromIndex(DOCUMENT_CHUNK_STORE, "byDocumentOrder", range)
+}
+
+export async function replaceDocumentChunks(
+  workspaceId: string,
+  documentId: string,
+  chunks: StoredDocumentChunk[]
+) {
+  const db = await getDb()
+  const tx = db.transaction(DOCUMENT_CHUNK_STORE, "readwrite")
+  const documentIndex = tx.store.index("documentId")
+
+  for await (const cursor of documentIndex.iterate(documentId)) {
+    await cursor.delete()
+  }
+
+  const now = Date.now()
+
+  for (const chunk of chunks) {
+    await tx.store.put({
+      ...chunk,
+      workspaceId,
+      documentId,
+      createdAt: chunk.createdAt || now,
+    })
+  }
+
+  await tx.done
+}
+
 export async function updateWorkspaceDocument(document: StoredWorkspaceDocument) {
   const db = await getDb()
   await db.put(DOCUMENT_STORE, document)
@@ -259,16 +329,29 @@ export async function updateWorkspaceDocument(document: StoredWorkspaceDocument)
 
 export async function deleteWorkspaceDocument(documentId: string) {
   const db = await getDb()
-  await db.delete(DOCUMENT_STORE, documentId)
+  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE], "readwrite")
+  const chunkDocumentIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("documentId")
+
+  await tx.objectStore(DOCUMENT_STORE).delete(documentId)
+
+  for await (const cursor of chunkDocumentIndex.iterate(documentId)) {
+    await cursor.delete()
+  }
+
+  await tx.done
 }
 
 export async function deleteWorkspace(workspaceId: string) {
   const db = await getDb()
   await db.delete(WORKSPACE_STORE, workspaceId)
 
-  const tx = db.transaction([MESSAGE_STORE, DOCUMENT_STORE], "readwrite")
+  const tx = db.transaction(
+    [MESSAGE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE],
+    "readwrite"
+  )
   const messageWorkspaceIndex = tx.objectStore(MESSAGE_STORE).index("workspaceId")
   const documentWorkspaceIndex = tx.objectStore(DOCUMENT_STORE).index("workspaceId")
+  const chunkWorkspaceIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("workspaceId")
 
   for await (const cursor of messageWorkspaceIndex.iterate(workspaceId)) {
     await cursor.delete()
@@ -278,13 +361,17 @@ export async function deleteWorkspace(workspaceId: string) {
     await cursor.delete()
   }
 
+  for await (const cursor of chunkWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
   await tx.done
 }
 
 export async function clearDocuChatData() {
   const db = await getDb()
   const tx = db.transaction(
-    [MESSAGE_STORE, WORKSPACE_STORE, DOCUMENT_STORE],
+    [MESSAGE_STORE, WORKSPACE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE],
     "readwrite"
   )
 
@@ -292,6 +379,7 @@ export async function clearDocuChatData() {
     tx.objectStore(MESSAGE_STORE).clear(),
     tx.objectStore(WORKSPACE_STORE).clear(),
     tx.objectStore(DOCUMENT_STORE).clear(),
+    tx.objectStore(DOCUMENT_CHUNK_STORE).clear(),
     tx.done,
   ])
 }

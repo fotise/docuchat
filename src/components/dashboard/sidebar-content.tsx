@@ -16,6 +16,9 @@ interface SidebarContentProps {
 
 function getProcessingProgress(workspace: WorkspaceRouteConfig) {
   const totalFiles = workspace.uploadedDocuments.length
+  const erroredFiles = workspace.uploadedDocuments.filter(
+    (document) => document.processingStatus === "error"
+  ).length
   const unprocessedFiles = workspace.uploadedDocuments.filter(
     (document) => (document.processingStatus ?? "processed") !== "processed"
   ).length
@@ -30,6 +33,7 @@ function getProcessingProgress(workspace: WorkspaceRouteConfig) {
   return {
     pendingFiles: unprocessedFiles,
     percentage,
+    hasErrors: erroredFiles > 0,
     isAllPending: unprocessedFiles === totalFiles,
   }
 }
@@ -179,7 +183,9 @@ export function SidebarContent({
                       <span
                         className={cn(
                           "block h-full rounded-full transition-all",
-                          processingProgress.isAllPending
+                          processingProgress.hasErrors
+                            ? "bg-rose-400"
+                            : processingProgress.isAllPending
                             ? "bg-slate-500"
                             : "bg-blue-400"
                         )}

@@ -88,6 +88,10 @@ function getDocumentStatusLabel(status: GenerateReplyInput["documents"][number][
     return "processing"
   }
 
+  if (status === "error") {
+    return "error"
+  }
+
   if (status === "toBeProcessed") {
     return "to be processed"
   }

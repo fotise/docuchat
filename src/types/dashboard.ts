@@ -9,7 +9,7 @@ export type IconKey =
   | "compass"
 
 export type UploadedDocTone = "blue" | "red" | "green" | "gray"
-export type FileProcessingStatus = "toBeProcessed" | "processing" | "processed"
+export type FileProcessingStatus = "toBeProcessed" | "processing" | "processed" | "error"
 export type MessageSide = "left" | "right"
 export type WorkspaceTabId = string
 export type ChartMetricKey = "growth" | "reach" | "intent" | "signal"
@@ -89,6 +89,10 @@ export interface UploadedDocument {
   tone: UploadedDocTone
   size?: number
   uploadedAt?: number
+  chunkCount?: number
+  parentChunkCount?: number
+  childChunkCount?: number
+  pageCount?: number
   toBeProcessed?: boolean
   processingStatus?: FileProcessingStatus
 }
