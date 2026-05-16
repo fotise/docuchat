@@ -17,6 +17,20 @@ const testLlmClient: LlmClient = {
   generateReply: async ({ prompt }) => `Test LLM reply for: ${prompt}`,
 }
 
+function createControlledProcessingWorker() {
+  const worker = {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    onerror: null as ((event: Event) => void) | null,
+    messages: [] as Array<{ message: unknown; transfer?: Transferable[] }>,
+    postMessage(message: unknown, transfer?: Transferable[]) {
+      this.messages.push({ message, transfer })
+    },
+    terminate: () => {},
+  }
+
+  return worker
+}
+
 function renderApp() {
   return render(
     <LlmProvider client={testLlmClient}>
@@ -30,7 +44,11 @@ function renderApp() {
 afterEach(async () => {
   cleanup()
   localStorage.clear()
-  useWorkspaceStore.setState({ isLoaded: false, workspaces: [] })
+  useWorkspaceStore.setState({
+    isLoaded: false,
+    isProcessingDocument: false,
+    workspaces: [],
+  })
   await clearDocuChatData()
   window.history.pushState({}, "", "/")
 })
@@ -79,6 +97,7 @@ describe("App", () => {
     expect(storedDocument?.content.byteLength).toBe(file.size)
     expect(storedDocument?.toBeProcessed).toBe(true)
     expect(storedDocument?.tone).toBe("gray")
+    expect(storedDocument?.processingStatus).toBe("toBeProcessed")
 
     expect(
       await screen.findByRole("progressbar", {
@@ -108,6 +127,160 @@ describe("App", () => {
         name: "Workspace 4 file processing progress",
       })
     ).toHaveAttribute("aria-valuenow", "0")
+  })
+
+  it("processes a pending workspace file with a worker", async () => {
+    renderApp()
+
+    const file = new File(["process me"], "Process_Me.pdf", {
+      type: "application/pdf",
+    })
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: { files: [file] },
+    })
+
+    expect(await screen.findByText("Process_Me.pdf")).toBeTruthy()
+
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Process_Me.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("processing")
+    })
+
+    const processingDocuments = await getWorkspaceDocuments("market-research")
+    const processingDocument = processingDocuments.find(
+      (document) => document.name === "Process_Me.pdf"
+    )
+
+    expect(processingDocument?.processingStatus).toBe("processing")
+    expect(worker.messages).toHaveLength(1)
+    expect(worker.messages[0]?.message).toMatchObject({
+      workspaceId: "market-research",
+      documentId: processingDocument?.id,
+    })
+    expect(worker.messages[0]?.transfer).toHaveLength(1)
+
+    worker.onmessage?.({
+      data: {
+        workspaceId: "market-research",
+        documentId: processingDocument?.id,
+        processingStatus: "processed",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Process_Me.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("processed")
+      expect(document?.toBeProcessed).toBe(false)
+      expect(document?.tone).toBe("blue")
+    })
+
+    expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
+
+    const processedDocuments = await getWorkspaceDocuments("market-research")
+    const processedDocument = processedDocuments.find(
+      (document) => document.name === "Process_Me.pdf"
+    )
+
+    expect(processedDocument?.processingStatus).toBe("processed")
+    expect(processedDocument?.tone).toBe("blue")
+  })
+
+  it("requeues a file when worker processing fails", async () => {
+    renderApp()
+
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["retry"], "Retry_Me.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Retry_Me.pdf")).toBeTruthy()
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+
+    worker.onerror?.(new Event("error"))
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Retry_Me.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("toBeProcessed")
+      expect(document?.toBeProcessed).toBe(true)
+    })
+
+    expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
+  })
+
+  it("does not start another worker while a file is processing", async () => {
+    renderApp()
+
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["first"], "First_Pending.pdf", {
+            type: "application/pdf",
+          }),
+          new File(["second"], "Second_Pending.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("First_Pending.pdf")).toBeTruthy()
+    expect(await screen.findByText("Second_Pending.pdf")).toBeTruthy()
+
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => createControlledProcessingWorker() as unknown as Worker)
+    ).toBe(false)
+
+    const documents = useWorkspaceStore.getState().workspaces[0]?.uploadedDocuments ?? []
+
+    expect(
+      documents.filter((document) => document.processingStatus === "processing")
+    ).toHaveLength(1)
+    expect(
+      documents.filter((document) => document.processingStatus === "toBeProcessed")
+    ).toHaveLength(1)
   })
 
   it("opens file details and deletes a workspace file", async () => {

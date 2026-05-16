@@ -3,27 +3,54 @@ import {
   addWorkspaceDocuments,
   deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
   deleteWorkspace as deleteStoredWorkspace,
+  getWorkspaceDocuments,
   saveWorkspace,
   seedWorkspacesIfEmpty,
   type StoredWorkspaceDocument,
+  updateWorkspaceDocument as updateStoredWorkspaceDocument,
 } from "@/lib/chat-history/indexed-db"
 import type {
   ChartPoint,
+  FileProcessingStatus,
   IconKey,
   UploadedDocument,
   WorkspaceRouteConfig,
 } from "@/types/dashboard"
 
+interface FileProcessingWorkerResult {
+  workspaceId: string
+  documentId: string
+  processingStatus: FileProcessingStatus
+}
+
+interface FileProcessingWorkerRequest {
+  workspaceId: string
+  documentId: string
+  content?: ArrayBuffer
+}
+
+type FileProcessingWorkerFactory = () => Worker
+
 interface WorkspaceStoreState {
   isLoaded: boolean
+  isProcessingDocument: boolean
   workspaces: WorkspaceRouteConfig[]
   loadWorkspaces: (seedWorkspaces: WorkspaceRouteConfig[]) => Promise<void>
   createWorkspace: () => Promise<WorkspaceRouteConfig>
   renameWorkspace: (workspaceId: string, title: string) => Promise<void>
   updateWorkspaceIcon: (workspaceId: string, icon: IconKey) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
+  processNextWorkspaceDocument: (
+    workerFactory?: FileProcessingWorkerFactory
+  ) => Promise<boolean>
   deleteWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
+}
+
+function createFileProcessingWorker() {
+  return new Worker(new URL("../workers/file-processing-worker.ts", import.meta.url), {
+    type: "module",
+  })
 }
 
 function slugify(value: string) {
@@ -63,6 +90,7 @@ function createUploadedDocument(file: File): UploadedDocument {
     size: file.size,
     uploadedAt: Date.now(),
     toBeProcessed: true,
+    processingStatus: "toBeProcessed",
   }
 }
 
@@ -85,6 +113,38 @@ function getEmptyHighlightedFile(): Pick<UploadedDocument, "name" | "tone"> {
     name: "No documents uploaded",
     tone: "blue",
   }
+}
+
+function getDocumentProcessingStatus(document: UploadedDocument) {
+  return document.processingStatus ?? (document.toBeProcessed ? "toBeProcessed" : "processed")
+}
+
+function updateWorkspaceDocumentState(
+  workspace: WorkspaceRouteConfig,
+  documentId: string,
+  processingStatus: FileProcessingStatus
+) {
+  return {
+    ...workspace,
+    uploadedDocuments: workspace.uploadedDocuments.map((document) =>
+      document.id === documentId
+        ? {
+            ...document,
+            tone: processingStatus === "processed" ? "blue" : "gray",
+            toBeProcessed: processingStatus === "toBeProcessed",
+            processingStatus,
+          }
+        : document
+    ),
+  } satisfies WorkspaceRouteConfig
+}
+
+function hasProcessingDocument(workspaces: WorkspaceRouteConfig[]) {
+  return workspaces.some((workspace) =>
+    workspace.uploadedDocuments.some(
+      (document) => getDocumentProcessingStatus(document) === "processing"
+    )
+  )
 }
 
 function buildNewWorkspace(existingWorkspaces: WorkspaceRouteConfig[]) {
@@ -130,6 +190,7 @@ function buildNewWorkspace(existingWorkspaces: WorkspaceRouteConfig[]) {
 
 export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   isLoaded: false,
+  isProcessingDocument: false,
   workspaces: [],
 
   loadWorkspaces: async (seedWorkspaces) => {
@@ -226,6 +287,159 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         item.id === workspaceId ? updatedWorkspace : item
       ),
     }))
+  },
+
+  processNextWorkspaceDocument: async (workerFactory = createFileProcessingWorker) => {
+    if (get().isProcessingDocument || hasProcessingDocument(get().workspaces)) {
+      return false
+    }
+
+    const workspace = get().workspaces.find((item) =>
+      item.uploadedDocuments.some(
+        (document) => getDocumentProcessingStatus(document) === "toBeProcessed"
+      )
+    )
+    const document = workspace?.uploadedDocuments.find(
+      (item) => getDocumentProcessingStatus(item) === "toBeProcessed"
+    )
+
+    if (!workspace || !document) {
+      return false
+    }
+
+    const processingWorkspaceId = workspace.id
+    const processingDocumentId = document.id
+
+    const processingWorkspace = updateWorkspaceDocumentState(
+      workspace,
+      processingDocumentId,
+      "processing"
+    )
+
+    set((state) => ({
+      isProcessingDocument: true,
+      workspaces: state.workspaces.map((item) =>
+        item.id === processingWorkspaceId ? processingWorkspace : item
+      ),
+    }))
+
+    const storedDocument = (await getWorkspaceDocuments(processingWorkspaceId)).find(
+      (item) => item.id === processingDocumentId
+    )
+
+    if (storedDocument) {
+      await updateStoredWorkspaceDocument({
+        ...storedDocument,
+        tone: "gray",
+        toBeProcessed: false,
+        processingStatus: "processing",
+      })
+    }
+
+    await saveWorkspace(processingWorkspace)
+
+    const worker = workerFactory()
+
+    async function requeueProcessingDocument() {
+      const currentWorkspace = get().workspaces.find(
+        (item) => item.id === processingWorkspaceId
+      )
+
+      if (!currentWorkspace) {
+        set({ isProcessingDocument: false })
+        return
+      }
+
+      const requeuedWorkspace = updateWorkspaceDocumentState(
+        currentWorkspace,
+        processingDocumentId,
+        "toBeProcessed"
+      )
+      const currentStoredDocument = (
+        await getWorkspaceDocuments(processingWorkspaceId)
+      ).find((item) => item.id === processingDocumentId)
+
+      if (currentStoredDocument) {
+        await updateStoredWorkspaceDocument({
+          ...currentStoredDocument,
+          tone: "gray",
+          toBeProcessed: true,
+          processingStatus: "toBeProcessed",
+        })
+      }
+
+      await saveWorkspace(requeuedWorkspace)
+      set((state) => ({
+        isProcessingDocument: false,
+        workspaces: state.workspaces.map((item) =>
+          item.id === processingWorkspaceId ? requeuedWorkspace : item
+        ),
+      }))
+    }
+
+    worker.onerror = () => {
+      void requeueProcessingDocument()
+      worker.terminate()
+    }
+
+    worker.onmessage = async (event: MessageEvent<FileProcessingWorkerResult>) => {
+      if (event.data.documentId !== processingDocumentId) {
+        await requeueProcessingDocument()
+        worker.terminate()
+        return
+      }
+
+      const currentWorkspace = get().workspaces.find(
+        (item) => item.id === event.data.workspaceId
+      )
+
+      if (!currentWorkspace) {
+        set({ isProcessingDocument: false })
+        worker.terminate()
+        return
+      }
+
+      const processedWorkspace = updateWorkspaceDocumentState(
+        currentWorkspace,
+        event.data.documentId,
+        "processed"
+      )
+      const currentStoredDocument = (
+        await getWorkspaceDocuments(event.data.workspaceId)
+      ).find((item) => item.id === event.data.documentId)
+
+      if (currentStoredDocument) {
+        await updateStoredWorkspaceDocument({
+          ...currentStoredDocument,
+          tone: "blue",
+          toBeProcessed: false,
+          processingStatus: "processed",
+        })
+      }
+
+      await saveWorkspace(processedWorkspace)
+      set((state) => ({
+        isProcessingDocument: false,
+        workspaces: state.workspaces.map((item) =>
+          item.id === event.data.workspaceId ? processedWorkspace : item
+        ),
+      }))
+      worker.terminate()
+    }
+
+    const workerRequest: FileProcessingWorkerRequest = {
+      workspaceId: processingWorkspaceId,
+      documentId: processingDocumentId,
+      content: storedDocument?.content,
+    }
+
+    if (workerRequest.content) {
+      worker.postMessage(workerRequest, [workerRequest.content])
+    } else {
+      worker.postMessage(workerRequest)
+    }
+
+    return true
   },
 
   deleteWorkspaceDocument: async (workspaceId, documentId) => {

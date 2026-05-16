@@ -133,7 +133,9 @@ export function UploadedDocumentsCard({
   }
 
   function getDisplayTone(document: UploadedDocument) {
-    return document.toBeProcessed ? "gray" : "blue"
+    return document.toBeProcessed || document.processingStatus === "processing"
+      ? "gray"
+      : "blue"
   }
 
   return (
@@ -152,6 +154,7 @@ export function UploadedDocumentsCard({
               name={doc.name}
               tone={doc.tone}
               toBeProcessed={doc.toBeProcessed}
+              processingStatus={doc.processingStatus}
               onClick={() => setSelectedDocument(doc)}
             />
           ))}

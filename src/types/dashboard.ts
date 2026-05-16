@@ -9,6 +9,7 @@ export type IconKey =
   | "compass"
 
 export type UploadedDocTone = "blue" | "red" | "green" | "gray"
+export type FileProcessingStatus = "toBeProcessed" | "processing" | "processed"
 export type MessageSide = "left" | "right"
 export type WorkspaceTabId = string
 export type ChartMetricKey = "growth" | "reach" | "intent" | "signal"
@@ -89,6 +90,7 @@ export interface UploadedDocument {
   size?: number
   uploadedAt?: number
   toBeProcessed?: boolean
+  processingStatus?: FileProcessingStatus
 }
 
 export interface WorkspaceRouteConfig {

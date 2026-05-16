@@ -1,16 +1,21 @@
 import type { UploadedDocument } from "@/types/dashboard"
 import { FilePreviewIcon } from "./file-preview-icon"
 
-type DocumentMiniCardProps = Pick<UploadedDocument, "name" | "tone" | "toBeProcessed"> & {
+type DocumentMiniCardProps = Pick<
+  UploadedDocument,
+  "name" | "tone" | "toBeProcessed" | "processingStatus"
+> & {
   onClick?: () => void
 }
 
 export function DocumentMiniCard({
   name,
   toBeProcessed,
+  processingStatus,
   onClick,
 }: DocumentMiniCardProps) {
-  const displayTone = toBeProcessed ? "gray" : "blue"
+  const displayTone =
+    toBeProcessed || processingStatus === "processing" ? "gray" : "blue"
 
   return (
     <button

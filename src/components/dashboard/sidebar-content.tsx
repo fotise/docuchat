@@ -16,21 +16,21 @@ interface SidebarContentProps {
 
 function getProcessingProgress(workspace: WorkspaceRouteConfig) {
   const totalFiles = workspace.uploadedDocuments.length
-  const pendingFiles = workspace.uploadedDocuments.filter(
-    (document) => document.toBeProcessed
+  const unprocessedFiles = workspace.uploadedDocuments.filter(
+    (document) => (document.processingStatus ?? "processed") !== "processed"
   ).length
 
-  if (totalFiles === 0 || pendingFiles === 0) {
+  if (totalFiles === 0 || unprocessedFiles === 0) {
     return null
   }
 
-  const processedFiles = totalFiles - pendingFiles
+  const processedFiles = totalFiles - unprocessedFiles
   const percentage = Math.round((processedFiles / totalFiles) * 100)
 
   return {
-    pendingFiles,
+    pendingFiles: unprocessedFiles,
     percentage,
-    isAllPending: pendingFiles === totalFiles,
+    isAllPending: unprocessedFiles === totalFiles,
   }
 }
 
