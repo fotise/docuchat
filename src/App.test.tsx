@@ -7,6 +7,7 @@ import {
   getDocumentChunks,
   getWorkspaceDocuments,
 } from "@/lib/chat-history/indexed-db"
+import { createParentChildChunks } from "@/lib/file-processing/chunking"
 import {
   getFileProcessorKind,
   processPdfPipeline,
@@ -565,6 +566,71 @@ describe("App", () => {
       pageNumbers: [2],
       parentChunkId: "pdf-pipeline-test:parent:1",
     })
+  })
+
+  it("creates configurable parent child chunks without LangChain", () => {
+    const chunks = createParentChildChunks(
+      [
+        {
+          pageNumber: 3,
+          text: "Alpha section. Beta section. Gamma section.",
+        },
+      ],
+      {
+        childChunkOverlap: 0,
+        childChunkSize: 10,
+        idPrefix: "custom-document",
+        parentChunkOverlap: 0,
+        parentChunkSize: 18,
+        separators: [". ", " "],
+      }
+    )
+
+    expect(chunks).toHaveLength(3)
+    expect(chunks[0]).toMatchObject({
+      id: "custom-document:parent:0",
+      pageNumbers: [3],
+      text: "Alpha section.",
+    })
+    expect(chunks[0]?.children[0]).toMatchObject({
+      id: "custom-document:child:0:0",
+      parentId: "custom-document:parent:0",
+      pageNumbers: [3],
+    })
+    expect(chunks[1]).toMatchObject({
+      id: "custom-document:parent:1",
+      text: "Beta section.",
+    })
+  })
+
+  it("honors paragraph separators and sanitizes chunking options", () => {
+    const chunks = createParentChildChunks(
+      [
+        {
+          pageNumber: 4,
+          text: "First paragraph keeps its boundary.\n\nSecond paragraph follows.",
+        },
+      ],
+      {
+        childChunkOverlap: 999,
+        childChunkSize: 12,
+        idPrefix: "paragraph-document",
+        parentChunkOverlap: -10,
+        parentChunkSize: 40,
+        separators: ["\n\n", " "],
+      }
+    )
+
+    expect(chunks).toHaveLength(2)
+    expect(chunks[0]).toMatchObject({
+      pageNumbers: [4],
+      text: "First paragraph keeps its boundary.",
+    })
+    expect(chunks[1]).toMatchObject({
+      pageNumbers: [4],
+      text: "Second paragraph follows.",
+    })
+    expect(chunks[0]?.children.length).toBeGreaterThan(1)
   })
 
   it("opens file details and deletes a workspace file", async () => {

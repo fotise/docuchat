@@ -2,6 +2,12 @@ import {
   replaceDocumentChunks,
   type StoredDocumentChunk,
 } from "@/lib/chat-history/indexed-db"
+import {
+  createParentChildChunks,
+  type PageText,
+  type ParentChildChunkOptions,
+  type ParentChunk,
+} from "./chunking"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
 export type FileProcessorKind =
@@ -31,33 +37,8 @@ export interface FileProcessingResult {
 
 type FileProcessor = (job: FileProcessingJob) => Promise<FileProcessingResult>
 
-export interface PdfPageText {
-  pageNumber: number
-  text: string
-}
-
-export interface PdfChildChunk {
-  id: string
-  parentId: string
-  text: string
-  pageNumbers: number[]
-  order: number
-}
-
-export interface PdfParentChunk {
-  id: string
-  text: string
-  pageNumbers: number[]
-  order: number
-  children: PdfChildChunk[]
-}
-
-interface PdfPipelineOptions {
-  childChunkOverlap?: number
-  childChunkSize?: number
-  extractTextByPage?: (content: ArrayBuffer) => Promise<PdfPageText[]>
-  parentChunkOverlap?: number
-  parentChunkSize?: number
+interface PdfPipelineOptions extends ParentChildChunkOptions {
+  extractTextByPage?: (content: ArrayBuffer) => Promise<PageText[]>
 }
 
 interface PdfJsTextContent {
@@ -93,11 +74,6 @@ interface PdfJsModule {
     promise: Promise<PdfJsDocument>
   }
 }
-
-const DEFAULT_PARENT_CHUNK_SIZE = 1800
-const DEFAULT_PARENT_CHUNK_OVERLAP = 180
-const DEFAULT_CHILD_CHUNK_SIZE = 500
-const DEFAULT_CHILD_CHUNK_OVERLAP = 80
 
 const mimeTypeExtensionMap: Record<string, string> = {
   "application/msword": "doc",
@@ -152,43 +128,6 @@ function getTextItemString(item: unknown) {
   return typeof value === "string" ? value : ""
 }
 
-function uniquePageNumbers(pageNumbers: number[]) {
-  return [...new Set(pageNumbers)].sort((a, b) => a - b)
-}
-
-function getChunkEnd(text: string, start: number, size: number) {
-  const preferredEnd = Math.min(start + size, text.length)
-
-  if (preferredEnd === text.length) {
-    return preferredEnd
-  }
-
-  const boundary = text.lastIndexOf(" ", preferredEnd)
-  return boundary > start ? boundary : preferredEnd
-}
-
-function splitText(text: string, size: number, overlap: number) {
-  const chunks: string[] = []
-  let start = 0
-
-  while (start < text.length) {
-    const end = getChunkEnd(text, start, size)
-    const chunk = text.slice(start, end).trim()
-
-    if (chunk) {
-      chunks.push(chunk)
-    }
-
-    if (end >= text.length) {
-      break
-    }
-
-    start = Math.max(end - overlap, start + 1)
-  }
-
-  return chunks
-}
-
 async function extractPdfTextByPage(content: ArrayBuffer) {
   const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs")) as unknown as PdfJsModule
 
@@ -204,7 +143,7 @@ async function extractPdfTextByPage(content: ArrayBuffer) {
     worker: pdfWorker,
   })
   const pdf = await documentTask.promise
-  const pages: PdfPageText[] = []
+  const pages: PageText[] = []
 
   try {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -224,78 +163,10 @@ async function extractPdfTextByPage(content: ArrayBuffer) {
   return pages
 }
 
-function createChildChunks(
-  documentId: string,
-  parent: Omit<PdfParentChunk, "children">,
-  childChunkSize: number,
-  childChunkOverlap: number
-) {
-  return splitText(parent.text, childChunkSize, childChunkOverlap).map(
-    (text, index) => ({
-      id: `${documentId}:child:${parent.order}:${index}`,
-      parentId: parent.id,
-      text,
-      pageNumbers: parent.pageNumbers,
-      order: index,
-    }) satisfies PdfChildChunk
-  )
-}
-
-export function createParentChildChunks(
-  documentId: string,
-  pages: PdfPageText[],
-  options: Omit<PdfPipelineOptions, "extractTextByPage"> = {}
-) {
-  const parentChunkSize = options.parentChunkSize ?? DEFAULT_PARENT_CHUNK_SIZE
-  const parentChunkOverlap = options.parentChunkOverlap ?? DEFAULT_PARENT_CHUNK_OVERLAP
-  const childChunkSize = options.childChunkSize ?? DEFAULT_CHILD_CHUNK_SIZE
-  const childChunkOverlap = options.childChunkOverlap ?? DEFAULT_CHILD_CHUNK_OVERLAP
-  const parents: PdfParentChunk[] = []
-  let parentOrder = 0
-
-  function addParent(text: string, pageNumbers: number[]) {
-    const normalized = normalizeText(text)
-
-    if (!normalized) {
-      return
-    }
-
-    const parent = {
-      id: `${documentId}:parent:${parentOrder}`,
-      text: normalized,
-      pageNumbers: uniquePageNumbers(pageNumbers),
-      order: parentOrder,
-    }
-    const children = createChildChunks(
-      documentId,
-      parent,
-      childChunkSize,
-      childChunkOverlap
-    )
-
-    parents.push({ ...parent, children })
-    parentOrder += 1
-  }
-
-  for (const page of pages) {
-    const text = normalizeText(page.text)
-
-    if (!text) {
-      continue
-    }
-
-    for (const chunk of splitText(text, parentChunkSize, parentChunkOverlap)) {
-      addParent(chunk, [page.pageNumber])
-    }
-  }
-
-  return parents
-}
-
 function flattenChunks(
   workspaceId: string,
   documentId: string,
-  parents: PdfParentChunk[]
+  parents: ParentChunk[]
 ) {
   const now = Date.now()
   const chunks: StoredDocumentChunk[] = []
@@ -348,7 +219,10 @@ export async function processPdfPipeline(
   const pages = await (options.extractTextByPage ?? extractPdfTextByPage)(job.content)
 
   // Step 2: create parent/child chunks while preserving page references.
-  const parentChunks = createParentChildChunks(job.documentId, pages, options)
+  const parentChunks = createParentChildChunks(pages, {
+    ...options,
+    idPrefix: options.idPrefix ?? job.documentId,
+  })
   const storedChunks = flattenChunks(job.workspaceId, job.documentId, parentChunks)
 
   // Step 3: persist the searchable chunk index in IndexedDB.
