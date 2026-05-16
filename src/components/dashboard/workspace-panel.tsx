@@ -135,6 +135,12 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
       const assistantText = await llmClient.generateReply({
         workspaceTitle: workspace.title,
         tabLabel: tabLabelAtSend,
+        documents: workspace.uploadedDocuments.map((document) => ({
+          name: document.name,
+          type: document.type,
+          size: document.size,
+          processingStatus: document.processingStatus,
+        })),
         prompt: trimmed,
         messages: currentMessages,
         signal: abortController.signal,

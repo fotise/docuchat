@@ -6,15 +6,22 @@ import {
   clearDocuChatData,
   getWorkspaceDocuments,
 } from "@/lib/chat-history/indexed-db"
+import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
+import type { GenerateReplyInput } from "@/lib/llm/types"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import App from "./App"
+
+let lastGenerateReplyInput: GenerateReplyInput | null = null
 
 const testLlmClient: LlmClient = {
   id: "test-llm",
   label: "Test LLM",
   isAvailable: async () => true,
-  generateReply: async ({ prompt }) => `Test LLM reply for: ${prompt}`,
+  generateReply: async (input) => {
+    lastGenerateReplyInput = input
+    return `Test LLM reply for: ${input.prompt}`
+  },
 }
 
 function createControlledProcessingWorker() {
@@ -43,6 +50,8 @@ function renderApp() {
 
 afterEach(async () => {
   cleanup()
+  lastGenerateReplyInput = null
+  window.LanguageModel = undefined
   localStorage.clear()
   useWorkspaceStore.setState({
     isLoaded: false,
@@ -393,6 +402,128 @@ describe("App", () => {
     expect(
       await screen.findByText("Test LLM reply for: Summarize the market trends")
     ).toBeTruthy()
+    expect(lastGenerateReplyInput?.workspaceTitle).toBe("Market Research")
+    expect(lastGenerateReplyInput?.documents[0]).toMatchObject({
+      name: "Market_Overview.pdf",
+      type: "pdf",
+    })
+  })
+
+  it("adds workspace date and file context to the Chrome local LLM system prompt", async () => {
+    let systemPrompt = ""
+    let promptPayload = ""
+
+    window.LanguageModel = {
+      availability: async () => "available",
+      create: async (options) => {
+        systemPrompt = options?.systemPrompt ?? ""
+
+        return {
+          prompt: async (input) => {
+            promptPayload = input
+            return "Chrome local reply"
+          },
+        }
+      },
+    }
+
+    const client = createChromeLocalLlmClient()
+    const reply = await client.generateReply({
+      workspaceTitle: "Research Hub",
+      tabLabel: "Contracts",
+      documents: [
+        {
+          name: "Agreement.pdf",
+          type: "pdf",
+          size: 2048,
+          processingStatus: "processed",
+        },
+        {
+          name: "Survey.csv",
+          type: "csv",
+          size: 512,
+          processingStatus: "toBeProcessed",
+        },
+      ],
+      prompt: "Summarize the files",
+      messages: [],
+    })
+
+    expect(reply).toBe("Chrome local reply")
+    expect(systemPrompt).toContain("Current date:")
+    expect(systemPrompt).toContain("Workspace: Research Hub.")
+    expect(systemPrompt).toContain("Active tab: Contracts.")
+    expect(systemPrompt).toContain("Workspace files count: 2.")
+    expect(systemPrompt).toContain("Workspace files (2):")
+    expect(systemPrompt).toContain("1. Agreement.pdf (pdf, 2.0 KB, processed)")
+    expect(systemPrompt).toContain("2. Survey.csv (csv, 512 B, to be processed)")
+    expect(systemPrompt).toContain("For file inventory questions")
+    expect(systemPrompt).toContain("Prefer processed files.")
+    expect(systemPrompt).toContain("say what is missing instead of inventing details")
+    expect(promptPayload).toContain("System context:")
+    expect(promptPayload).toContain("Workspace: Research Hub.")
+    expect(promptPayload).toContain("Workspace files count: 2.")
+    expect(promptPayload).toContain("Workspace files (2):")
+    expect(promptPayload).toContain("Current user request — answer this request now")
+    expect(promptPayload).toContain("Recent conversation for continuity only:")
+    expect(promptPayload).toContain("User request: Summarize the files")
+  })
+
+  it("prioritizes file inventory context for file count questions", async () => {
+    let promptPayload = ""
+
+    window.LanguageModel = {
+      availability: async () => "available",
+      create: async () => ({
+        prompt: async (input) => {
+          promptPayload = input
+          return "Hai 2 file nel workspace corrente."
+        },
+      }),
+    }
+
+    const client = createChromeLocalLlmClient()
+    const reply = await client.generateReply({
+      workspaceTitle: "Vendor Notes",
+      tabLabel: "General Chat",
+      documents: [
+        {
+          name: "Vendor_Notes.pdf",
+          type: "pdf",
+          size: 1024,
+          processingStatus: "processed",
+        },
+        {
+          name: "Budget.xlsx",
+          type: "xlsx",
+          size: 4096,
+          processingStatus: "processed",
+        },
+      ],
+      prompt: "Quanti file ho?",
+      messages: [
+        {
+          id: "previous-user",
+          side: "left",
+          text: "Summarize the vendor notes.",
+        },
+        {
+          id: "previous-assistant",
+          side: "right",
+          text: "Please provide the vendor notes.",
+        },
+      ],
+    })
+
+    expect(reply).toBe("Hai 2 file nel workspace corrente.")
+    expect(promptPayload).toContain("Workspace files count: 2.")
+    expect(promptPayload).toContain("Current user request — answer this request now")
+    expect(promptPayload.indexOf("Quanti file ho?")).toBeLessThan(
+      promptPayload.indexOf("Recent conversation for continuity only:")
+    )
+    expect(promptPayload).toContain(
+      "answer directly from the workspace files list without asking for document contents"
+    )
   })
 
   it("creates a new workspace", async () => {
