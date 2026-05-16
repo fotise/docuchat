@@ -6,6 +6,7 @@ import {
   clearDocuChatData,
   getWorkspaceDocuments,
 } from "@/lib/chat-history/indexed-db"
+import { processWorkspaceFile } from "@/lib/file-processing/processors"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
@@ -242,6 +243,9 @@ describe("App", () => {
     expect(worker.messages[0]?.message).toMatchObject({
       workspaceId: "market-research",
       documentId: processingDocument?.id,
+      fileName: "Process_Me.pdf",
+      fileType: "pdf",
+      mimeType: "application/pdf",
     })
     expect(worker.messages[0]?.transfer).toHaveLength(1)
 
@@ -319,6 +323,57 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
   })
 
+  it("requeues a file when the worker reports an unprocessed result", async () => {
+    renderApp()
+
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["retry result"], "Retry_Result.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Retry_Result.pdf")).toBeTruthy()
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+
+    const processingDocuments = await getWorkspaceDocuments("market-research")
+    const processingDocument = processingDocuments.find(
+      (document) => document.name === "Retry_Result.pdf"
+    )
+
+    worker.onmessage?.({
+      data: {
+        workspaceId: "market-research",
+        documentId: processingDocument?.id,
+        errorMessage: "Unsupported file contents",
+        processingStatus: "toBeProcessed",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Retry_Result.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("toBeProcessed")
+      expect(document?.toBeProcessed).toBe(true)
+      expect(document?.tone).toBe("gray")
+    })
+
+    expect(useWorkspaceStore.getState().isProcessingDocument).toBe(false)
+  })
+
   it("does not start another worker while a file is processing", async () => {
     renderApp()
 
@@ -359,6 +414,34 @@ describe("App", () => {
     expect(
       documents.filter((document) => document.processingStatus === "toBeProcessed")
     ).toHaveLength(1)
+  })
+
+  it("selects a file processor from the document extension", async () => {
+    await expect(
+      processWorkspaceFile({ fileName: "Report.PDF", content: new ArrayBuffer(12) })
+    ).resolves.toMatchObject({ byteLength: 12, processor: "pdf" })
+    await expect(
+      processWorkspaceFile({ fileName: "Contract.docx" })
+    ).resolves.toMatchObject({ processor: "word" })
+    await expect(
+      processWorkspaceFile({ fileName: "Metrics.xlsx" })
+    ).resolves.toMatchObject({ processor: "spreadsheet" })
+    await expect(
+      processWorkspaceFile({ fileName: "Slides.pptx" })
+    ).resolves.toMatchObject({ processor: "presentation" })
+    await expect(
+      processWorkspaceFile({ fileName: "Notes.md" })
+    ).resolves.toMatchObject({ processor: "text" })
+    await expect(
+      processWorkspaceFile({ fileName: "Archive.zip" })
+    ).resolves.toMatchObject({ processor: "generic" })
+    await expect(
+      processWorkspaceFile({
+        fileName: "download",
+        fileType: "application/pdf",
+        mimeType: "application/pdf",
+      })
+    ).resolves.toMatchObject({ processor: "pdf" })
   })
 
   it("opens file details and deletes a workspace file", async () => {

@@ -3,7 +3,7 @@ import {
   addWorkspaceDocuments,
   deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
   deleteWorkspace as deleteStoredWorkspace,
-  getWorkspaceDocuments,
+  getWorkspaceDocument,
   saveWorkspace,
   seedWorkspacesIfEmpty,
   type StoredWorkspaceDocument,
@@ -21,11 +21,15 @@ interface FileProcessingWorkerResult {
   workspaceId: string
   documentId: string
   processingStatus: FileProcessingStatus
+  errorMessage?: string
 }
 
 interface FileProcessingWorkerRequest {
   workspaceId: string
   documentId: string
+  fileName: string
+  fileType?: string
+  mimeType?: string
   content?: ArrayBuffer
 }
 
@@ -289,8 +293,12 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }))
   },
 
-  processNextWorkspaceDocument: async (workerFactory = createFileProcessingWorker) => {
+  processNextWorkspaceDocument: async (workerFactory) => {
     if (get().isProcessingDocument || hasProcessingDocument(get().workspaces)) {
+      return false
+    }
+
+    if (!workerFactory && typeof Worker === "undefined") {
       return false
     }
 
@@ -323,9 +331,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       ),
     }))
 
-    const storedDocument = (await getWorkspaceDocuments(processingWorkspaceId)).find(
-      (item) => item.id === processingDocumentId
-    )
+    const storedDocument = await getWorkspaceDocument(processingDocumentId)
 
     if (storedDocument) {
       await updateStoredWorkspaceDocument({
@@ -338,7 +344,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
     await saveWorkspace(processingWorkspace)
 
-    const worker = workerFactory()
+    const worker = workerFactory?.() ?? createFileProcessingWorker()
 
     async function requeueProcessingDocument() {
       const currentWorkspace = get().workspaces.find(
@@ -355,9 +361,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         processingDocumentId,
         "toBeProcessed"
       )
-      const currentStoredDocument = (
-        await getWorkspaceDocuments(processingWorkspaceId)
-      ).find((item) => item.id === processingDocumentId)
+      const currentStoredDocument = await getWorkspaceDocument(processingDocumentId)
 
       if (currentStoredDocument) {
         await updateStoredWorkspaceDocument({
@@ -389,6 +393,12 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         return
       }
 
+      if (event.data.processingStatus !== "processed") {
+        await requeueProcessingDocument()
+        worker.terminate()
+        return
+      }
+
       const currentWorkspace = get().workspaces.find(
         (item) => item.id === event.data.workspaceId
       )
@@ -404,9 +414,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         event.data.documentId,
         "processed"
       )
-      const currentStoredDocument = (
-        await getWorkspaceDocuments(event.data.workspaceId)
-      ).find((item) => item.id === event.data.documentId)
+      const currentStoredDocument = await getWorkspaceDocument(event.data.documentId)
 
       if (currentStoredDocument) {
         await updateStoredWorkspaceDocument({
@@ -430,6 +438,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     const workerRequest: FileProcessingWorkerRequest = {
       workspaceId: processingWorkspaceId,
       documentId: processingDocumentId,
+      fileName: document.name,
+      fileType: document.type,
+      mimeType: storedDocument?.mimeType,
       content: storedDocument?.content,
     }
 

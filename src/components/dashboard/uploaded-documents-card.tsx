@@ -31,7 +31,10 @@ export function UploadedDocumentsCard({
   const [statusMessage, setStatusMessage] = useState("")
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
-  const [selectedDocument, setSelectedDocument] = useState<UploadedDocument | null>(null)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
+  const selectedDocument = documents.find(
+    (document) => document.id === selectedDocumentId
+  ) ?? null
 
   useEffect(() => {
     if (!selectedDocument) {
@@ -40,7 +43,7 @@ export function UploadedDocumentsCard({
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setSelectedDocument(null)
+        setSelectedDocumentId(null)
       }
     }
 
@@ -112,7 +115,7 @@ export function UploadedDocumentsCard({
     const deletedName = selectedDocument.name
 
     await onDeleteDocument(selectedDocument.id)
-    setSelectedDocument(null)
+    setSelectedDocumentId(null)
     setStatusMessage(`Deleted ${deletedName} from this workspace.`)
   }
 
@@ -160,7 +163,7 @@ export function UploadedDocumentsCard({
               size={doc.size}
               toBeProcessed={doc.toBeProcessed}
               processingStatus={doc.processingStatus}
-              onClick={() => setSelectedDocument(doc)}
+              onClick={() => setSelectedDocumentId(doc.id)}
             />
           ))}
         </div>
@@ -276,7 +279,7 @@ export function UploadedDocumentsCard({
                 type="button"
                 variant="secondary"
                 aria-label="Close file details"
-                onClick={() => setSelectedDocument(null)}
+                onClick={() => setSelectedDocumentId(null)}
                 className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15"
               >
                 Close

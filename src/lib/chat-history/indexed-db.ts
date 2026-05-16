@@ -247,6 +247,11 @@ export async function getWorkspaceDocuments(
   return documents.sort((a, b) => (a.uploadedAt ?? 0) - (b.uploadedAt ?? 0))
 }
 
+export async function getWorkspaceDocument(documentId: string) {
+  const db = await getDb()
+  return db.get(DOCUMENT_STORE, documentId)
+}
+
 export async function updateWorkspaceDocument(document: StoredWorkspaceDocument) {
   const db = await getDb()
   await db.put(DOCUMENT_STORE, document)

@@ -24,6 +24,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       return
     }
 
+    if (typeof Worker !== "undefined") {
+      void processNextWorkspaceDocument()
+    }
+
     const intervalId = window.setInterval(() => {
       void processNextWorkspaceDocument()
     }, 5000)
