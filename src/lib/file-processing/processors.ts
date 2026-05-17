@@ -1,4 +1,6 @@
 import {
+  deleteDocumentChunks,
+  deleteDocumentGraph,
   replaceDocumentChunks,
   replaceDocumentGraph,
   type StoredDocumentChunk,
@@ -14,6 +16,7 @@ import {
   type GeneratedEmbedding,
 } from "./embeddings"
 import { applyGraphEntityEmbeddings, buildDocumentGraph } from "./graph-extraction"
+import { extractGraphWithLlm, type ExtractGraphWithLlmInput } from "./llm-graph-extraction"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
 export type FileProcessorKind =
@@ -46,9 +49,13 @@ export interface FileProcessingResult {
 
 type FileProcessor = (job: FileProcessingJob) => Promise<FileProcessingResult>
 
-interface PdfPipelineOptions extends ParentChildChunkOptions {
-  extractTextByPage?: (content: ArrayBuffer) => Promise<PageText[]>
+interface DocumentPipelineOptions extends ParentChildChunkOptions {
+  extractGraphWithLlm?: (input: ExtractGraphWithLlmInput) => Promise<Awaited<ReturnType<typeof extractGraphWithLlm>>>
   generateEmbeddings?: (texts: string[]) => Promise<GeneratedEmbedding[]>
+}
+
+interface PdfPipelineOptions extends DocumentPipelineOptions {
+  extractTextByPage?: (content: ArrayBuffer) => Promise<PageText[]>
 }
 
 interface PdfJsTextContent {
@@ -118,11 +125,8 @@ function getExtension({ fileName, fileType, mimeType }: FileProcessingJob) {
   )
 }
 
-async function processWith(kind: FileProcessorKind, job: FileProcessingJob) {
-  return {
-    byteLength: job.content?.byteLength ?? 0,
-    processor: kind,
-  }
+async function processUnsupported(kind: FileProcessorKind, job: FileProcessingJob): Promise<FileProcessingResult> {
+  throw new Error(`${kind} processing is not implemented for ${job.fileName}`)
 }
 
 function normalizeText(text: string) {
@@ -221,95 +225,163 @@ function flattenChunks(
   return chunks
 }
 
+async function processPageTextPipeline(
+  job: FileProcessingJob,
+  pages: PageText[],
+  processor: FileProcessorKind,
+  options: DocumentPipelineOptions = {}
+) {
+  if (!job.workspaceId || !job.documentId) {
+    throw new Error("Document processing requires workspaceId and documentId")
+  }
+
+  if (!job.content) {
+    throw new Error("Document processing requires file content")
+  }
+
+  let didPersistChunks = false
+
+  try {
+    const parentChunks = createParentChildChunks(pages, {
+      ...options,
+      idPrefix: options.idPrefix ?? job.documentId,
+    })
+    const childChunks = parentChunks.flatMap((parent) => parent.children)
+    const childEmbeddings = await (options.generateEmbeddings ?? generateEmbeddings)(
+      childChunks.map((child) => child.text)
+    )
+    const storedChunks = flattenChunks(
+      job.workspaceId,
+      job.documentId,
+      parentChunks,
+      childEmbeddings
+    )
+
+    await replaceDocumentChunks(job.workspaceId, job.documentId, storedChunks)
+    didPersistChunks = true
+
+    const llmExtraction = await (options.extractGraphWithLlm ?? extractGraphWithLlm)({
+      documentName: job.fileName,
+      textSections: parentChunks.map((parent) => ({
+        id: parent.id,
+        pageNumbers: parent.pageNumbers,
+        text: parent.text,
+      })),
+    }).catch(() => undefined)
+
+    const documentGraph = buildDocumentGraph(
+      job.workspaceId,
+      job.documentId,
+      storedChunks,
+      { llmExtraction }
+    )
+    const graphEntityEmbeddings = documentGraph.entities.length > 0
+      ? await (options.generateEmbeddings ?? generateEmbeddings)(
+          documentGraph.entities.map((entity) => [
+            entity.name,
+            ...entity.aliases,
+            entity.mentions[0]?.text ?? "",
+          ].join("\n"))
+        )
+      : []
+    const embeddedDocumentGraph = applyGraphEntityEmbeddings(
+      documentGraph,
+      graphEntityEmbeddings
+    )
+
+    await replaceDocumentGraph(
+      job.workspaceId,
+      job.documentId,
+      embeddedDocumentGraph.entities,
+      embeddedDocumentGraph.edges
+    )
+
+    return {
+      byteLength: job.content.byteLength,
+      childChunkCount: parentChunks.reduce(
+        (total, parent) => total + parent.children.length,
+        0
+      ),
+      embeddingCount: childEmbeddings.length,
+      graphEdgeCount: embeddedDocumentGraph.edges.length,
+      graphEntityCount: embeddedDocumentGraph.entities.length,
+      pageCount: pages.length,
+      parentChunkCount: parentChunks.length,
+      processor,
+    } satisfies FileProcessingResult
+  } catch (error) {
+    if (didPersistChunks) {
+      await deleteDocumentChunks(job.documentId)
+      await deleteDocumentGraph(job.documentId)
+    }
+
+    throw error
+  }
+}
+
+function decodeTextContent(content: ArrayBuffer) {
+  return normalizeText(new TextDecoder().decode(content))
+}
+
+export async function processTextPipeline(
+  job: FileProcessingJob,
+  options: DocumentPipelineOptions = {}
+) {
+  if (!job.content) {
+    throw new Error("Text processing requires file content")
+  }
+
+  const text = decodeTextContent(job.content)
+
+  if (!text) {
+    throw new Error(`No extractable text found in ${job.fileName}`)
+  }
+
+  return processPageTextPipeline(
+    job,
+    [{ pageNumber: 1, text }],
+    "text",
+    options
+  )
+}
+
+async function processCsvPipeline(job: FileProcessingJob) {
+  const result = await processTextPipeline(job)
+
+  return {
+    ...result,
+    processor: "spreadsheet",
+  } satisfies FileProcessingResult
+}
+
+async function processMarkdownPipeline(job: FileProcessingJob) {
+  return processTextPipeline(job)
+}
+
 export async function processPdfPipeline(
   job: FileProcessingJob,
   options: PdfPipelineOptions = {}
 ) {
-  if (!job.workspaceId || !job.documentId) {
-    throw new Error("PDF processing requires workspaceId and documentId")
-  }
-
   if (!job.content) {
     throw new Error("PDF processing requires file content")
   }
 
-  // Step 1: extract page-aware text inside the worker.
   const pages = await (options.extractTextByPage ?? extractPdfTextByPage)(job.content)
 
-  // Step 2: create parent/child chunks while preserving page references.
-  const parentChunks = createParentChildChunks(pages, {
-    ...options,
-    idPrefix: options.idPrefix ?? job.documentId,
-  })
-  const childChunks = parentChunks.flatMap((parent) => parent.children)
-
-  // Step 3: generate embeddings for every child chunk inside the worker.
-  const childEmbeddings = await (options.generateEmbeddings ?? generateEmbeddings)(
-    childChunks.map((child) => child.text)
-  )
-  const storedChunks = flattenChunks(
-    job.workspaceId,
-    job.documentId,
-    parentChunks,
-    childEmbeddings
-  )
-
-  // Step 4: persist the searchable chunk index and embeddings in IndexedDB.
-  await replaceDocumentChunks(job.workspaceId, job.documentId, storedChunks)
-
-  // Step 5: create and persist a local co-occurrence graph for Graph RAG.
-  const documentGraph = buildDocumentGraph(
-    job.workspaceId,
-    job.documentId,
-    storedChunks
-  )
-  const graphEntityEmbeddings = documentGraph.entities.length > 0
-    ? await (options.generateEmbeddings ?? generateEmbeddings)(
-        documentGraph.entities.map((entity) => [
-          entity.name,
-          ...entity.aliases,
-          entity.mentions[0]?.text ?? "",
-        ].join("\n"))
-      )
-    : []
-  const embeddedDocumentGraph = applyGraphEntityEmbeddings(
-    documentGraph,
-    graphEntityEmbeddings
-  )
-
-  await replaceDocumentGraph(
-    job.workspaceId,
-    job.documentId,
-    embeddedDocumentGraph.entities,
-    embeddedDocumentGraph.edges
-  )
-
-  return {
-    byteLength: job.content.byteLength,
-    childChunkCount: parentChunks.reduce(
-      (total, parent) => total + parent.children.length,
-      0
-    ),
-    embeddingCount: childEmbeddings.length,
-    graphEdgeCount: embeddedDocumentGraph.edges.length,
-    graphEntityCount: embeddedDocumentGraph.entities.length,
-    pageCount: pages.length,
-    parentChunkCount: parentChunks.length,
-    processor: "pdf",
-  } satisfies FileProcessingResult
+  return processPageTextPipeline(job, pages, "pdf", options)
 }
 
 const processorByExtension: Record<string, FileProcessor> = {
-  csv: (job) => processWith("spreadsheet", job),
-  doc: (job) => processWith("word", job),
-  docx: (job) => processWith("word", job),
-  md: (job) => processWith("text", job),
+  csv: (job) => processCsvPipeline(job),
+  doc: (job) => processUnsupported("word", job),
+  docx: (job) => processUnsupported("word", job),
+  md: (job) => processMarkdownPipeline(job),
   pdf: (job) => processPdfPipeline(job),
-  ppt: (job) => processWith("presentation", job),
-  pptx: (job) => processWith("presentation", job),
-  txt: (job) => processWith("text", job),
-  xls: (job) => processWith("spreadsheet", job),
-  xlsx: (job) => processWith("spreadsheet", job),
+  ppt: (job) => processUnsupported("presentation", job),
+  pptx: (job) => processUnsupported("presentation", job),
+  txt: (job) => processTextPipeline(job),
+  xls: (job) => processUnsupported("spreadsheet", job),
+  xlsx: (job) => processUnsupported("spreadsheet", job),
 }
 
 const processorKindByExtension: Record<string, FileProcessorKind> = {
@@ -325,7 +397,7 @@ const processorKindByExtension: Record<string, FileProcessorKind> = {
   xlsx: "spreadsheet",
 }
 
-const genericProcessor: FileProcessor = (job) => processWith("generic", job)
+const genericProcessor: FileProcessor = (job) => processUnsupported("generic", job)
 
 export function getFileProcessorKind(job: FileProcessingJob): FileProcessorKind {
   const extension = getExtension(job)

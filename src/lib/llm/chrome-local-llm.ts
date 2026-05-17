@@ -3,6 +3,7 @@ import type {
   GenerateRetrievalQueryInput,
   GenerateRetrievalQueryResult,
   LlmClient,
+  RetrievalMode,
 } from "./types"
 
 type ChromeAvailability =
@@ -52,6 +53,21 @@ const supportedAvailability = new Set<ChromeAvailability>([
   "readily",
   "after-download",
 ])
+const supportedRetrievalModes = new Set<RetrievalMode>([
+  "none",
+  "inventory",
+  "semantic",
+  "targeted_file",
+  "summary",
+  "graph",
+  "hybrid_graph",
+])
+
+function parseRetrievalMode(value: unknown): RetrievalMode | undefined {
+  return typeof value === "string" && supportedRetrievalModes.has(value as RetrievalMode)
+    ? value as RetrievalMode
+    : undefined
+}
 
 function getChromeLanguageModel(): ChromeLanguageModelFactory | undefined {
   if (typeof window === "undefined") {
@@ -255,7 +271,7 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
 
     return {
       intent: typeof parsed.intent === "string" ? parsed.intent : "Answer the latest user question.",
-      retrievalMode: parsed.retrievalMode,
+      retrievalMode: parseRetrievalMode(parsed.retrievalMode),
       needsDocumentSearch: typeof parsed.needsDocumentSearch === "boolean" ? parsed.needsDocumentSearch : true,
       searchQuery: typeof parsed.searchQuery === "string" && parsed.searchQuery.trim().length > 0
         ? parsed.searchQuery

@@ -100,16 +100,16 @@ function matchesTargetDocument(document: StoredWorkspaceDocument | undefined, ta
     return false
   }
 
-  const normalizedName = normalizeSearchText(document.name)
-  const baseName = normalizedName.replace(/\.[^.]+$/, "")
+  const normalizedName = normalizeSearchText(document.name).replace(/[^a-z0-9.]+/g, " ").trim()
+  const baseName = normalizedName.replace(/\.[a-z0-9]{1,8}$/i, "")
 
   return targets.some((target) => {
-    const normalizedTarget = normalizeSearchText(target)
+    const normalizedTarget = normalizeSearchText(target).replace(/[^a-z0-9.]+/g, " ").trim()
+    const normalizedTargetBaseName = normalizedTarget.replace(/\.[a-z0-9]{1,8}$/i, "")
 
-    return normalizedName.includes(normalizedTarget)
-      || normalizedTarget.includes(normalizedName)
-      || baseName.includes(normalizedTarget)
-      || normalizedTarget.includes(baseName)
+    return normalizedName === normalizedTarget
+      || baseName === normalizedTarget
+      || baseName === normalizedTargetBaseName
   })
 }
 
@@ -225,6 +225,11 @@ export async function semanticSearchWorkspace(
       .filter((document) => matchesTargetDocument(document, normalizedTargets))
       .map((document) => document.id)
   )
+
+  if (normalizedTargets.length > 0 && targetDocumentIds.size === 0) {
+    return []
+  }
+
   const filteredChunks = targetDocumentIds.size > 0
     ? searchableChunks.filter((chunk) => targetDocumentIds.has(chunk.documentId))
     : searchableChunks

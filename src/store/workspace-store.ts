@@ -490,6 +490,9 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         })
       }
 
+      await deleteDocumentChunks(processingDocumentId)
+      await deleteDocumentGraph(processingDocumentId)
+
       await saveWorkspace(errorWorkspace)
       set((state) => ({
         isProcessingDocument: false,
@@ -518,12 +521,16 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
 
       const result = event.data
 
-      if (result.documentId !== processingDocumentId) {
+      if (
+        result.documentId !== processingDocumentId
+        || result.workspaceId !== processingWorkspaceId
+      ) {
         console.error("[DocuChat] File processing worker returned an unexpected document", {
           expectedDocumentId: processingDocumentId,
+          expectedWorkspaceId: processingWorkspaceId,
           fileName: document.name,
           receivedDocumentId: result.documentId,
-          workspaceId: result.workspaceId,
+          receivedWorkspaceId: result.workspaceId,
         })
 
         await markProcessingDocumentError()

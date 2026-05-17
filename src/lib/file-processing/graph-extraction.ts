@@ -5,6 +5,7 @@ import type {
   StoredGraphEdge,
   StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
+import nlp from "compromise"
 import type { GeneratedEmbedding } from "./embeddings"
 
 interface DocumentGraph {
@@ -131,8 +132,41 @@ function extractTopicEntities(text: string) {
   return matches.map((match) => match.trim())
 }
 
+function toStringArray(value: string[] | string) {
+  return Array.isArray(value) ? value : value ? [value] : []
+}
+
+function extractCompromiseMatches(
+  document: ReturnType<typeof nlp>,
+  method: "dates" | "money" | "organizations" | "people" | "places" | "percentages" | "topics"
+) {
+  return toStringArray(document[method]?.().out("array") ?? [])
+}
+
+function extractNlpEntities(text: string) {
+  const document = nlp(text)
+
+  return uniqueValues([
+    ...extractCompromiseMatches(document, "people"),
+    ...extractCompromiseMatches(document, "organizations"),
+    ...extractCompromiseMatches(document, "places"),
+    ...extractCompromiseMatches(document, "dates"),
+    ...extractCompromiseMatches(document, "money"),
+    ...extractCompromiseMatches(document, "percentages"),
+    ...extractCompromiseMatches(document, "topics"),
+    ...toStringArray(document.match("#Adjective? #Noun+").out("array")),
+  ]).filter((entity) => {
+    const normalized = normalizeEntityName(entity)
+
+    return normalized.length > 2
+      && normalized.length <= MAX_ENTITY_NAME_LENGTH
+      && !TOPIC_STOP_WORDS.has(normalized)
+  })
+}
+
 function extractEntityNames(text: string) {
   return uniqueValues([
+    ...extractNlpEntities(text),
     ...extractCapitalizedEntities(text),
     ...extractMetricEntities(text),
     ...extractDateEntities(text),

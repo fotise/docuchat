@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from "react"
 import { ChevronDown, Heart } from "lucide-react"
+import ForceGraph2D, { type NodeObject } from "react-force-graph-2d"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { dashboardConfig } from "@/config/dashboard"
@@ -21,6 +22,18 @@ interface HeaderProps {
 interface HeaderChipProps {
   icon: ReactNode
   label: ReactNode
+}
+
+interface GraphViewNode {
+  id: string
+  selected: boolean
+}
+
+interface GraphViewLink {
+  selected: boolean
+  source: string
+  target: string
+  type: string
 }
 
 function HeaderChip({ icon, label }: HeaderChipProps) {
@@ -89,6 +102,18 @@ export function Header({ workspace }: HeaderProps) {
 
     return { edges, nodes }
   }, [searchResults])
+  const forceGraphData = useMemo(() => ({
+    nodes: graphView.nodes.map((node) => ({
+      id: node,
+      selected: selectedGraphNode === node,
+    })),
+    links: graphView.edges.slice(0, 18).map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      type: edge.type,
+      selected: selectedGraphNode === edge.source || selectedGraphNode === edge.target,
+    })),
+  }), [graphView, selectedGraphNode])
 
   function handleExploreClick() {
     setStatusMessage("Workspace explorer controls are not connected yet.")
@@ -146,6 +171,11 @@ export function Header({ workspace }: HeaderProps) {
       setRagDebugContext(context)
       setSearchResults(context.retrievedChunks)
       setSelectedGraphNode("")
+      setStatusMessage(context.retrievalError ?? "RAG simulation completed.")
+    } catch (error) {
+      setRagDebugContext(null)
+      setSearchResults([])
+      setStatusMessage(error instanceof Error ? error.message : "RAG simulation failed.")
     } finally {
       setIsSearching(false)
     }
@@ -483,6 +513,11 @@ export function Header({ workspace }: HeaderProps) {
                   </div>
                 </div>
               ) : null}
+              {ragDebugContext?.retrievalError ? (
+                <div className="mt-3 rounded-2xl border border-amber-300/20 bg-amber-400/10 p-3 text-xs text-amber-100" role="alert">
+                  Retrieval warning: {ragDebugContext.retrievalError}
+                </div>
+              ) : null}
               <div className="mt-4 rounded-2xl border border-violet-300/15 bg-slate-950/20 p-3 text-xs text-slate-200">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
@@ -527,86 +562,63 @@ export function Header({ workspace }: HeaderProps) {
                       </span>
                     )}
                   </div>
-                  <svg
-                    className="h-32 w-full rounded-xl border border-white/10 bg-slate-950/30"
+                  <div
+                    className="h-48 w-full overflow-hidden rounded-xl border border-white/10 bg-slate-950/30"
                     role="img"
                     aria-label="Graph RAG relationship visualization"
-                    viewBox="0 0 720 140"
                   >
                     {graphView.nodes.length === 0 ? (
-                      <text
-                        x="360"
-                        y="74"
-                        fill="#94a3b8"
-                        fontSize="14"
-                        textAnchor="middle"
+                      <div
+                        className="flex h-full items-center justify-center text-sm text-slate-400"
                       >
                         No graph relationships to display yet
-                      </text>
+                      </div>
                     ) : (
-                      <>
-                        {graphView.edges.slice(0, 14).map((edge, index) => {
-                        const sourceIndex = graphView.nodes.indexOf(edge.source)
-                        const targetIndex = graphView.nodes.indexOf(edge.target)
-                        const sourceX = 48 + (sourceIndex % 6) * 118
-                        const sourceY = sourceIndex < 6 ? 38 : 102
-                        const targetX = 48 + (targetIndex % 6) * 118
-                        const targetY = targetIndex < 6 ? 38 : 102
-                        const isSelected = selectedGraphNode === edge.source || selectedGraphNode === edge.target
+                      <ForceGraph2D<GraphViewNode, GraphViewLink>
+                        graphData={forceGraphData}
+                        width={860}
+                        height={190}
+                        backgroundColor="rgba(15, 23, 42, 0.3)"
+                        cooldownTicks={80}
+                        nodeRelSize={5}
+                        nodeLabel="id"
+                        nodeColor={(node) => node.selected ? "#a78bfa" : "#38bdf8"}
+                        linkColor={(link) => link.selected ? "#ddd6fe" : "rgba(56, 189, 248, 0.45)"}
+                        linkLabel={(link) => link.type}
+                        linkDirectionalParticles={(link) => link.selected ? 2 : 0}
+                        linkDirectionalParticleWidth={2}
+                        linkWidth={(link) => link.selected ? 2.4 : 1.2}
+                        onNodeClick={(node) => {
+                          if (typeof node.id === "string") {
+                            setSelectedGraphNode(node.id)
+                          }
+                        }}
+                        nodeCanvasObject={(node, canvasContext, globalScale) => {
+                          const graphNode = node as NodeObject<GraphViewNode>
+                          const label = String(graphNode.id ?? "")
+                          const fontSize = Math.max(9, 12 / globalScale)
+                          const radius = graphNode.selected ? 7 : 5
 
-                        return (
-                          <g key={`${edge.source}-${edge.target}-${index}`}>
-                            <line
-                              x1={sourceX}
-                              y1={sourceY}
-                              x2={targetX}
-                              y2={targetY}
-                              stroke={isSelected ? "#c4b5fd" : "#38bdf8"}
-                              strokeOpacity={isSelected ? 0.9 : 0.35}
-                              strokeWidth={isSelected ? 2.4 : 1.4}
-                            />
-                            <text
-                              x={(sourceX + targetX) / 2}
-                              y={(sourceY + targetY) / 2 - 4}
-                              fill="#bae6fd"
-                              fontSize="8"
-                              textAnchor="middle"
-                            >
-                              {edge.type}
-                            </text>
-                          </g>
-                        )
-                        })}
-                        {graphView.nodes.map((node, index) => {
-                        const x = 48 + (index % 6) * 118
-                        const y = index < 6 ? 38 : 102
-                        const isSelected = selectedGraphNode === node
-
-                        return (
-                          <g key={node}>
-                            <circle
-                              cx={x}
-                              cy={y}
-                              r={isSelected ? 18 : 14}
-                              fill={isSelected ? "#8b5cf6" : "#0f172a"}
-                              stroke={isSelected ? "#ddd6fe" : "#38bdf8"}
-                              strokeWidth="2"
-                            />
-                            <text
-                              x={x}
-                              y={y + 30}
-                              fill="#e0f2fe"
-                              fontSize="9"
-                              textAnchor="middle"
-                            >
-                              {node.length > 18 ? `${node.slice(0, 18)}…` : node}
-                            </text>
-                          </g>
-                        )
-                        })}
-                      </>
+                          canvasContext.beginPath()
+                          canvasContext.arc(graphNode.x ?? 0, graphNode.y ?? 0, radius, 0, 2 * Math.PI)
+                          canvasContext.fillStyle = graphNode.selected ? "#8b5cf6" : "#0f172a"
+                          canvasContext.fill()
+                          canvasContext.strokeStyle = graphNode.selected ? "#ddd6fe" : "#38bdf8"
+                          canvasContext.lineWidth = graphNode.selected ? 2.4 : 1.4
+                          canvasContext.stroke()
+                          canvasContext.font = `${fontSize}px Inter, system-ui, sans-serif`
+                          canvasContext.fillStyle = "#e0f2fe"
+                          canvasContext.textAlign = "center"
+                          canvasContext.textBaseline = "top"
+                          canvasContext.fillText(
+                            label.length > 24 ? `${label.slice(0, 24)}…` : label,
+                            graphNode.x ?? 0,
+                            (graphNode.y ?? 0) + radius + 4
+                          )
+                        }}
+                      />
                     )}
-                  </svg>
+                  </div>
                 </div>
               </div>
             </div>

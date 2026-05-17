@@ -32,6 +32,7 @@ interface GenerateRagRetrievalContextInput extends GenerateRagReplyInput {
 
 export interface RagRetrievalContext {
   baseInput: GenerateReplyInput
+  retrievalError?: string
   retrievalConfidence: RetrievalConfidence
   retrievalMode: RetrievalMode
   retrievalQuery: string
@@ -258,6 +259,7 @@ export async function generateRagRetrievalContext({
     new Set([...(retrievalQueryResult.graphEntities ?? []), ...graphEntityQueries, ...searchQueries])
   )
   let retrievedChunks: GenerateReplyInput["retrievedChunks"] = []
+  let retrievalError: string | undefined
 
   if (retrievalQueryResult.needsDocumentSearch && retrievalMode !== "none" && retrievalMode !== "inventory") {
     try {
@@ -278,6 +280,7 @@ export async function generateRagRetrievalContext({
               depth: graphDepth ?? retrievalQueryResult.graphDepth ?? workspace.graphSearchDepth ?? 1,
               entityQueries: graphQueries,
               limit: parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10,
+              targetDocumentNames: resolvedTargetDocumentNames,
             })
           : Promise.resolve([]),
       ])
@@ -290,11 +293,14 @@ export async function generateRagRetrievalContext({
       if (signal?.aborted) {
         throw error
       }
+
+      retrievalError = error instanceof Error ? error.message : "Document retrieval failed."
     }
   }
 
   return {
     baseInput,
+    retrievalError,
     retrievalConfidence: estimateRetrievalConfidence(retrievedChunks),
     retrievalMode,
     retrievalQuery,

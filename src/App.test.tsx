@@ -13,6 +13,7 @@ import {
 } from "@/lib/chat-history/indexed-db"
 import { createParentChildChunks } from "@/lib/file-processing/chunking"
 import { buildDocumentGraph } from "@/lib/file-processing/graph-extraction"
+import { parseGraphExtractionResponse } from "@/lib/file-processing/llm-graph-extraction"
 import {
   graphSearchWorkspace,
   retrieveGraphContextForWorkspace,
@@ -20,6 +21,8 @@ import {
 import {
   getFileProcessorKind,
   processPdfPipeline,
+  processTextPipeline,
+  processWorkspaceFile,
 } from "@/lib/file-processing/processors"
 import {
   retrieveParentChunksForWorkspace,
@@ -377,6 +380,96 @@ describe("App", () => {
     })
   })
 
+  it("does not fall back to all files when targeted semantic search misses", async () => {
+    const results = await semanticSearchWorkspace("legal-files", "contract renewal 2026", {
+      minSimilarity: 0.1,
+      targetDocumentNames: ["Missing.pdf"],
+      generateEmbeddings: async () => [
+        {
+          dimensions: 2,
+          embedding: [1, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getChunks: async () => [
+        {
+          id: "untargeted-child",
+          workspaceId: "legal-files",
+          documentId: "doc-target",
+          chunkId: "untargeted-child",
+          parentChunkId: "parent-target",
+          level: "child",
+          text: "The contract renewal deadline is in 2026.",
+          pageNumbers: [4],
+          embedding: [1, 0],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 1,
+          createdAt: 1,
+        },
+      ],
+      getDocuments: async () => [
+        {
+          id: "doc-target",
+          workspaceId: "legal-files",
+          name: "Agreement.pdf",
+          type: "pdf",
+          tone: "blue",
+          mimeType: "application/pdf",
+          blob: new Blob(["agreement"]),
+          content: new ArrayBuffer(1),
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(0)
+  })
+
+  it("uses exact filename matching for targeted semantic search", async () => {
+    const results = await semanticSearchWorkspace("legal-files", "contract renewal 2026", {
+      minSimilarity: 0.1,
+      targetDocumentNames: ["report"],
+      generateEmbeddings: async () => [
+        {
+          dimensions: 2,
+          embedding: [1, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getChunks: async () => [
+        {
+          id: "annual-report-child",
+          workspaceId: "legal-files",
+          documentId: "doc-annual-report",
+          chunkId: "annual-report-child",
+          parentChunkId: "annual-report-parent",
+          level: "child",
+          text: "The contract renewal deadline is in 2026.",
+          pageNumbers: [4],
+          embedding: [1, 0],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 1,
+          createdAt: 1,
+        },
+      ],
+      getDocuments: async () => [
+        {
+          id: "doc-annual-report",
+          workspaceId: "legal-files",
+          name: "Annual_Report.pdf",
+          type: "pdf",
+          tone: "blue",
+          mimeType: "application/pdf",
+          blob: new Blob(["agreement"]),
+          content: new ArrayBuffer(1),
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(0)
+  })
+
   it("builds and searches a local document graph for Graph RAG", async () => {
     const chunks = [
       {
@@ -486,6 +579,36 @@ describe("App", () => {
     )
   })
 
+  it("parses strict JSON graph extraction from a local LLM response", () => {
+    const parsed = parseGraphExtractionResponse(`Here is the JSON:\n{
+      "entities": [
+        { "name": "Revenue Growth", "type": "metric", "aliases": ["growth"], "confidence": 0.86 }
+      ],
+      "relations": [
+        { "source": "Revenue Growth", "target": "Customer Retention", "type": "depends_on", "evidence": "growth depends on retention", "confidence": 0.74 }
+      ]
+    }`)
+
+    expect(parsed).toMatchObject({
+      entities: [
+        {
+          aliases: ["growth"],
+          confidence: 0.86,
+          name: "Revenue Growth",
+          type: "metric",
+        },
+      ],
+      relations: [
+        {
+          confidence: 0.74,
+          source: "Revenue Growth",
+          target: "Customer Retention",
+          type: "depends_on",
+        },
+      ],
+    })
+  })
+
   it("uses graph entity embeddings when lexical entity search is weak", async () => {
     const results = await graphSearchWorkspace("market-research", "loyalty signal", {
       generateEmbeddings: async () => [
@@ -523,6 +646,90 @@ describe("App", () => {
       },
     })
     expect(results[0].score).toBeGreaterThan(0.3)
+  })
+
+  it("keeps graphology traversal stable with reversed duplicate relations", async () => {
+    const entities = [
+      {
+        id: "entity-a",
+        workspaceId: "market-research",
+        documentId: "doc-graph-target",
+        name: "Revenue Growth",
+        normalizedName: "revenue growth",
+        type: "metric" as const,
+        aliases: ["Revenue Growth"],
+        mentions: [
+          {
+            documentId: "doc-graph-target",
+            chunkId: "child-a",
+            parentChunkId: "parent-a",
+            pageNumbers: [1],
+            text: "Revenue growth depends on retention.",
+          },
+        ],
+        confidence: 0.9,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "entity-b",
+        workspaceId: "market-research",
+        documentId: "doc-graph-target",
+        name: "Customer Retention",
+        normalizedName: "customer retention",
+        type: "topic" as const,
+        aliases: ["Customer Retention"],
+        mentions: [
+          {
+            documentId: "doc-graph-target",
+            chunkId: "child-b",
+            parentChunkId: "parent-a",
+            pageNumbers: [1],
+            text: "Revenue growth depends on retention.",
+          },
+        ],
+        confidence: 0.9,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]
+    const edges = [
+      {
+        id: "edge-a-b",
+        workspaceId: "market-research",
+        sourceEntityId: "entity-a",
+        targetEntityId: "entity-b",
+        type: "depends_on" as const,
+        documentIds: ["doc-graph-target"],
+        chunkIds: ["child-a", "child-b"],
+        weight: 2,
+        evidenceText: ["Revenue growth depends on retention."],
+        confidence: 0.8,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "edge-b-a",
+        workspaceId: "market-research",
+        sourceEntityId: "entity-b",
+        targetEntityId: "entity-a",
+        type: "depends_on" as const,
+        documentIds: ["doc-graph-target"],
+        chunkIds: ["child-a", "child-b"],
+        weight: 2,
+        evidenceText: ["Retention supports revenue growth."],
+        confidence: 0.7,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]
+
+    const results = await graphSearchWorkspace("market-research", "Revenue Growth", {
+      getEdges: async () => edges,
+      getEntities: async () => entities,
+    })
+
+    expect(results[0]?.relatedEntities[0]?.entity.name).toBe("Customer Retention")
   })
 
   it("merges graph context into hybrid graph RAG retrieval", async () => {
@@ -564,6 +771,7 @@ describe("App", () => {
       retrieveGraphContext: async (_workspaceId, _query, options) => {
         expect(options.depth).toBe(2)
         expect(options.entityQueries).toContain("Customer retention")
+        expect(options.targetDocumentNames).toEqual([])
 
         return [
           {
@@ -591,6 +799,36 @@ describe("App", () => {
       parentChunkId: "parent-1",
       retrievalSource: "hybrid",
     })
+  })
+
+  it("applies target file constraints to graph retrieval", async () => {
+    const workspace = dashboardConfig.workspaces[0]
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "How are retention and customer health related in Market_Overview.pdf?",
+      messages: [],
+      llmClient: {
+        id: "graph-target-test-llm",
+        label: "Graph Target Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          graphEntities: ["Customer retention"],
+          intent: "Explain graph relationship in one target file.",
+          needsDocumentSearch: true,
+          retrievalMode: "graph",
+          searchQuery: "customer retention customer health relationship",
+          targetDocumentNames: ["Market_Overview.pdf"],
+        }),
+        generateReply: async () => "not used",
+      },
+      retrieveGraphContext: async (_workspaceId, _query, options) => {
+        expect(options.targetDocumentNames).toEqual(["Market_Overview.pdf"])
+        return []
+      },
+    })
+
+    expect(context.targetDocumentNames).toEqual(["Market_Overview.pdf"])
   })
 
   it("generates a retrieval query before answering chat with parent chunks", async () => {
@@ -1120,6 +1358,54 @@ describe("App", () => {
     expect(useWorkspaceStore.getState().isProcessingDocument).toBe(true)
   })
 
+  it("rejects worker results from an unexpected workspace", async () => {
+    renderApp()
+
+    const worker = createControlledProcessingWorker()
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["wrong workspace"], "Wrong_Workspace.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Wrong_Workspace.pdf")).toBeTruthy()
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => worker as unknown as Worker)
+    ).toBe(true)
+
+    const processingDocuments = await getWorkspaceDocuments("market-research")
+    const processingDocument = processingDocuments.find(
+      (document) => document.name === "Wrong_Workspace.pdf"
+    )
+
+    worker.onmessage?.({
+      data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
+        workspaceId: "legal-files",
+        documentId: processingDocument?.id,
+        processingStatus: "processed",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Wrong_Workspace.pdf"
+        )
+
+      expect(document?.processingStatus).toBe("error")
+      expect(document?.tone).toBe("red")
+    })
+  })
+
   it("does not start another worker while a file is processing", async () => {
     renderApp()
 
@@ -1180,6 +1466,7 @@ describe("App", () => {
 
   it("runs the PDF pipeline with page-aware parent child chunks in IndexedDB", async () => {
     const content = new ArrayBuffer(8)
+    let llmExtractionSectionCount = 0
 
     const result = await processPdfPipeline(
       {
@@ -1191,6 +1478,25 @@ describe("App", () => {
         content,
       },
       {
+        extractGraphWithLlm: async (input) => {
+          llmExtractionSectionCount = input.textSections.length
+
+          return {
+            entities: [
+              { name: "Revenue Growth", type: "metric" },
+              { name: "Retention Signals", type: "topic" },
+            ],
+            relations: [
+              {
+                confidence: 0.91,
+                evidence: "Page one explains revenue growth and retention signals.",
+                source: "Revenue Growth",
+                target: "Retention Signals",
+                type: "depends_on",
+              },
+            ],
+          }
+        },
         childChunkOverlap: 0,
         childChunkSize: 24,
         extractTextByPage: async () => [
@@ -1222,8 +1528,10 @@ describe("App", () => {
       parentChunkCount: 2,
       processor: "pdf",
     })
+    expect(llmExtractionSectionCount).toBe(2)
 
     const chunks = await getDocumentChunks("pdf-pipeline-test")
+    const graphEdges = await getWorkspaceGraphEdges("market-research")
 
     expect(chunks).toHaveLength(8)
     expect(chunks[0]).toMatchObject({
@@ -1247,6 +1555,110 @@ describe("App", () => {
       pageNumbers: [2],
       parentChunkId: "pdf-pipeline-test:parent:1",
     })
+    expect(graphEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          confidence: 0.91,
+          type: "depends_on",
+        }),
+      ])
+    )
+  })
+
+  it("runs the text pipeline with chunks, embeddings, and graph artifacts", async () => {
+    const content = new TextEncoder().encode(
+      "Customer retention improved after onboarding changes. Revenue growth followed retention gains."
+    ).buffer
+
+    const result = await processTextPipeline(
+      {
+        workspaceId: "market-research",
+        documentId: "text-pipeline-test",
+        fileName: "Notes.txt",
+        fileType: "txt",
+        mimeType: "text/plain",
+        content,
+      },
+      {
+        childChunkOverlap: 0,
+        childChunkSize: 40,
+        generateEmbeddings: async (texts) =>
+          texts.map((_, index) => ({
+            dimensions: 2,
+            embedding: [index + 1, index + 2],
+            model: "test-embedding-model",
+          })),
+        parentChunkOverlap: 0,
+        parentChunkSize: 100,
+      }
+    )
+
+    expect(result.processor).toBe("text")
+    expect(result.childChunkCount).toBeGreaterThan(0)
+
+    const chunks = await getDocumentChunks("text-pipeline-test")
+    const graphEntities = await getWorkspaceGraphEntities("market-research")
+
+    expect(chunks.some((chunk) => chunk.level === "child" && chunk.embedding)).toBe(true)
+    expect(graphEntities.length).toBeGreaterThan(0)
+  })
+
+  it("rolls back partial chunks when graph-stage processing fails", async () => {
+    const content = new ArrayBuffer(8)
+    let embeddingCallCount = 0
+
+    await expect(
+      processPdfPipeline(
+        {
+          workspaceId: "market-research",
+          documentId: "rollback-pipeline-test",
+          fileName: "Rollback.pdf",
+          fileType: "pdf",
+          mimeType: "application/pdf",
+          content,
+        },
+        {
+          childChunkOverlap: 0,
+          childChunkSize: 40,
+          extractTextByPage: async () => [
+            {
+              pageNumber: 1,
+              text: "Customer retention and revenue growth appear together.",
+            },
+          ],
+          generateEmbeddings: async (texts) => {
+            embeddingCallCount += 1
+
+            if (embeddingCallCount > 1) {
+              throw new Error("Graph embedding failed")
+            }
+
+            return texts.map((_, index) => ({
+              dimensions: 2,
+              embedding: [index + 1, index + 2],
+              model: "test-embedding-model",
+            }))
+          },
+          parentChunkOverlap: 0,
+          parentChunkSize: 100,
+        }
+      )
+    ).rejects.toThrow("Graph embedding failed")
+
+    expect(await getDocumentChunks("rollback-pipeline-test")).toHaveLength(0)
+  })
+
+  it("reports unsupported binary office files instead of marking them processed", async () => {
+    await expect(
+      processWorkspaceFile({
+        workspaceId: "market-research",
+        documentId: "unsupported-docx",
+        fileName: "Unsupported.docx",
+        fileType: "docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content: new ArrayBuffer(4),
+      })
+    ).rejects.toThrow("word processing is not implemented")
   })
 
   it("creates configurable parent child chunks without LangChain", () => {
@@ -1643,6 +2055,32 @@ describe("App", () => {
     expect(promptPayload).toContain(
       "answer directly from the workspace files list without asking for document contents"
     )
+  })
+
+  it("ignores unsupported retrieval modes from Chrome local LLM planning", async () => {
+    window.LanguageModel = {
+      availability: async () => "available",
+      create: async () => ({
+        prompt: async () => JSON.stringify({
+          intent: "Find retention evidence.",
+          retrievalMode: "hybridgraphs",
+          needsDocumentSearch: true,
+          searchQuery: "retention evidence",
+        }),
+      }),
+    }
+
+    const client = createChromeLocalLlmClient()
+    const result = await client.generateRetrievalQuery?.({
+      workspaceTitle: "Research Hub",
+      tabLabel: "General Chat",
+      documents: [],
+      prompt: "Find retention evidence",
+      messages: [],
+    })
+
+    expect(result?.retrievalMode).toBeUndefined()
+    expect(result?.searchQuery).toBe("retention evidence")
   })
 
   it("creates a new workspace", async () => {

@@ -1,12 +1,15 @@
 import {
   getWorkspaceDocumentChunks,
+  getWorkspaceDocuments,
   getWorkspaceGraphEdges,
   getWorkspaceGraphEntities,
   type StoredDocumentChunk,
   type StoredGraphEdge,
   type StoredGraphEntity,
+  type StoredWorkspaceDocument,
 } from "@/lib/chat-history/indexed-db"
 import type { RetrievedContextChunk } from "@/lib/llm/types"
+import { UndirectedGraph } from "graphology"
 import { cosineSimilarity } from "./semantic-search"
 import { generateEmbeddings, type GeneratedEmbedding } from "./embeddings"
 
@@ -15,9 +18,11 @@ interface GraphSearchOptions {
   entityQueries?: string[]
   generateEmbeddings?: (texts: string[]) => Promise<GeneratedEmbedding[]>
   getChunks?: (workspaceId: string) => Promise<StoredDocumentChunk[]>
+  getDocuments?: (workspaceId: string) => Promise<StoredWorkspaceDocument[]>
   getEdges?: (workspaceId: string) => Promise<StoredGraphEdge[]>
   getEntities?: (workspaceId: string) => Promise<StoredGraphEntity[]>
   limit?: number
+  targetDocumentNames?: string[]
 }
 
 export interface GraphSearchResult {
@@ -55,6 +60,56 @@ function normalizeGraphText(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
+}
+
+function normalizeFileName(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9.]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+}
+
+function stripFileExtension(value: string) {
+  return value.replace(/\.[a-z0-9]{1,8}$/i, "")
+}
+
+function matchesTargetDocument(document: StoredWorkspaceDocument, targets: string[]) {
+  if (targets.length === 0) {
+    return false
+  }
+
+  const normalizedName = normalizeFileName(document.name)
+  const normalizedBaseName = stripFileExtension(normalizedName)
+
+  return targets.some((target) => {
+    const normalizedTarget = normalizeFileName(target)
+    const normalizedTargetBaseName = stripFileExtension(normalizedTarget)
+
+    return normalizedName === normalizedTarget
+      || normalizedBaseName === normalizedTarget
+      || normalizedBaseName === normalizedTargetBaseName
+  })
+}
+
+async function resolveTargetDocumentIds(workspaceId: string, options: GraphSearchOptions) {
+  const normalizedTargets = (options.targetDocumentNames ?? [])
+    .map((target) => target.trim())
+    .filter(Boolean)
+
+  if (normalizedTargets.length === 0) {
+    return undefined
+  }
+
+  const documents = await (options.getDocuments ?? getWorkspaceDocuments)(workspaceId)
+
+  return new Set(
+    documents
+      .filter((document) => matchesTargetDocument(document, normalizedTargets))
+      .map((document) => document.id)
+  )
 }
 
 function tokenize(value: string) {
@@ -107,26 +162,64 @@ async function scoreEntitiesWithEmbeddings(
   )
 }
 
-function getOppositeEntityId(edge: StoredGraphEdge, entityId: string) {
-  if (edge.sourceEntityId === entityId) {
-    return edge.targetEntityId
-  }
-
-  if (edge.targetEntityId === entityId) {
-    return edge.sourceEntityId
-  }
-
-  return undefined
-}
-
 function buildChunkLookup(chunks: StoredDocumentChunk[]) {
   return new Map(chunks.map((chunk) => [chunk.chunkId, chunk]))
 }
 
+function buildGraphologyIndex(
+  entities: StoredGraphEntity[],
+  edges: StoredGraphEdge[]
+) {
+  const graph = new UndirectedGraph()
+  const edgeByKey = new Map<string, StoredGraphEdge>()
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]))
+
+  for (const entity of entities) {
+    graph.mergeNode(entity.id, {
+      confidence: entity.confidence,
+      mentionCount: entity.mentions.length,
+      name: entity.name,
+      type: entity.type,
+    })
+  }
+
+  for (const edge of edges) {
+    if (!entityById.has(edge.sourceEntityId) || !entityById.has(edge.targetEntityId)) {
+      continue
+    }
+
+    const canonicalEdgeId = [edge.sourceEntityId, edge.targetEntityId]
+      .sort()
+      .join("::")
+    const existingEdge = edgeByKey.get(canonicalEdgeId)
+
+    if (existingEdge && existingEdge.confidence >= edge.confidence) {
+      continue
+    }
+
+    graph.mergeUndirectedEdgeWithKey(canonicalEdgeId, edge.sourceEntityId, edge.targetEntityId, {
+      confidence: edge.confidence,
+      type: edge.type,
+      weight: edge.weight,
+    })
+    edgeByKey.set(canonicalEdgeId, edge)
+  }
+
+  const maxDegree = Math.max(1, ...graph.nodes().map((node) => graph.degree(node)))
+
+  return { edgeByKey, entityById, graph, maxDegree }
+}
+
+function getCentralityBoost(graph: UndirectedGraph, entityId: string, maxDegree: number) {
+  return Math.min(0.15, (graph.degree(entityId) / maxDegree) * 0.15)
+}
+
 function traverseRelatedEntities(
   rootEntity: StoredGraphEntity,
+  graph: UndirectedGraph,
   entityById: Map<string, StoredGraphEntity>,
-  edgesByEntityId: Map<string, StoredGraphEdge[]>,
+  edgeByKey: Map<string, StoredGraphEdge>,
+  maxDegree: number,
   maxDepth: number
 ) {
   const related: GraphSearchResult["relatedEntities"] = []
@@ -142,16 +235,23 @@ function traverseRelatedEntities(
       continue
     }
 
-    for (const edge of edgesByEntityId.get(current.entityId) ?? []) {
-      const relatedEntityId = getOppositeEntityId(edge, current.entityId)
-      const relatedEntity = relatedEntityId ? entityById.get(relatedEntityId) : undefined
+    for (const relatedEntityId of graph.neighbors(current.entityId)) {
+      const relatedEntity = entityById.get(relatedEntityId)
 
       if (!relatedEntity || visited.has(relatedEntity.id)) {
         continue
       }
 
+      const edgeKey = graph.undirectedEdges(current.entityId, relatedEntityId)[0]
+      const edge = edgeKey ? edgeByKey.get(edgeKey) : undefined
+
+      if (!edge) {
+        continue
+      }
+
       const edgeScore = Math.min(1, edge.confidence * 0.5 + Math.min(edge.weight / 5, 1) * 0.5)
-      const score = current.pathScore * edgeScore * (1 / (current.depth + 1))
+      const centralityBoost = getCentralityBoost(graph, relatedEntity.id, maxDegree)
+      const score = Math.min(1, current.pathScore * edgeScore * (1 / (current.depth + 1)) + centralityBoost)
       const nextDepth = current.depth + 1
 
       visited.add(relatedEntity.id)
@@ -252,35 +352,43 @@ export async function graphSearchWorkspace(
   query: string,
   options: GraphSearchOptions = {}
 ): Promise<GraphSearchResult[]> {
-  const [entities, edges] = await Promise.all([
+  const [entities, edges, targetDocumentIds] = await Promise.all([
     (options.getEntities ?? getWorkspaceGraphEntities)(workspaceId),
     (options.getEdges ?? getWorkspaceGraphEdges)(workspaceId),
+    resolveTargetDocumentIds(workspaceId, options),
   ])
-  const queries = [query, ...(options.entityQueries ?? [])].map((item) => item.trim()).filter(Boolean)
-  const entityById = new Map(entities.map((entity) => [entity.id, entity]))
-  const edgesByEntityId = new Map<string, StoredGraphEdge[]>()
-  const embeddingScores = await scoreEntitiesWithEmbeddings(queries, entities, options)
+  const filteredEntities = targetDocumentIds
+    ? entities.filter((entity) => entity.documentId ? targetDocumentIds.has(entity.documentId) : false)
+    : entities
+  const filteredEntityIds = new Set(filteredEntities.map((entity) => entity.id))
+  const filteredEdges = targetDocumentIds
+    ? edges.filter((edge) =>
+        edge.documentIds.some((documentId) => targetDocumentIds.has(documentId))
+        && filteredEntityIds.has(edge.sourceEntityId)
+        && filteredEntityIds.has(edge.targetEntityId)
+      )
+    : edges
 
-  for (const edge of edges) {
-    edgesByEntityId.set(edge.sourceEntityId, [
-      ...(edgesByEntityId.get(edge.sourceEntityId) ?? []),
-      edge,
-    ])
-    edgesByEntityId.set(edge.targetEntityId, [
-      ...(edgesByEntityId.get(edge.targetEntityId) ?? []),
-      edge,
-    ])
+  if (targetDocumentIds?.size === 0 || filteredEntities.length === 0) {
+    return []
   }
 
-  return entities
+  const queries = [query, ...(options.entityQueries ?? [])].map((item) => item.trim()).filter(Boolean)
+  const graphIndex = buildGraphologyIndex(filteredEntities, filteredEdges)
+  const embeddingScores = await scoreEntitiesWithEmbeddings(queries, filteredEntities, options)
+
+  return filteredEntities
     .map((entity) => {
       const lexicalScore = Math.max(...queries.map((item) => scoreEntity(item, entity)), 0)
       const embeddingScore = embeddingScores.get(entity.id) ?? 0
-      const bestScore = Math.min(1, lexicalScore * 0.65 + Math.max(0, embeddingScore) * 0.35)
+      const centralityBoost = getCentralityBoost(graphIndex.graph, entity.id, graphIndex.maxDegree)
+      const bestScore = Math.min(1, lexicalScore * 0.55 + Math.max(0, embeddingScore) * 0.35 + centralityBoost)
       const relatedEntities = traverseRelatedEntities(
         entity,
-        entityById,
-        edgesByEntityId,
+        graphIndex.graph,
+        graphIndex.entityById,
+        graphIndex.edgeByKey,
+        graphIndex.maxDegree,
         options.depth ?? 1
       )
 
@@ -301,10 +409,19 @@ export async function retrieveGraphContextForWorkspace(
   query: string,
   options: GraphSearchOptions = {}
 ): Promise<RetrievedContextChunk[]> {
-  const [chunks, graphResults] = await Promise.all([
+  const [allChunks, targetDocumentIds, graphResults] = await Promise.all([
     (options.getChunks ?? getWorkspaceDocumentChunks)(workspaceId),
+    resolveTargetDocumentIds(workspaceId, options),
     graphSearchWorkspace(workspaceId, query, options),
   ])
+  const chunks = targetDocumentIds
+    ? allChunks.filter((chunk) => targetDocumentIds.has(chunk.documentId))
+    : allChunks
+
+  if (targetDocumentIds?.size === 0) {
+    return []
+  }
+
   const chunkById = buildChunkLookup(chunks)
   const resultByParentId = new Map<string, RetrievedContextChunk>()
 
