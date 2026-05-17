@@ -1,4 +1,5 @@
 import { DEFAULT_MIN_SEMANTIC_SIMILARITY, retrieveParentChunksForWorkspace } from "@/lib/file-processing/semantic-search"
+import { retrieveGraphContextForWorkspace } from "@/lib/file-processing/graph-search"
 import type {
   GenerateReplyDocumentInfo,
   GenerateReplyInput,
@@ -15,6 +16,7 @@ interface GenerateRagReplyInput {
   prompt: string
   messages: WorkspaceMessage[]
   llmClient: LlmClient
+  retrieveGraphContext?: typeof retrieveGraphContextForWorkspace
   retrieveParentChunks?: typeof retrieveParentChunksForWorkspace
   signal?: AbortSignal
 }
@@ -22,6 +24,8 @@ interface GenerateRagReplyInput {
 interface GenerateRagRetrievalContextInput extends GenerateRagReplyInput {
   additionalQueries?: string[]
   childMatchLimit?: number
+  graphDepth?: number
+  graphEntityQueries?: string[]
   parentChunkLimit?: number
   targetDocumentNames?: string[]
 }
@@ -94,6 +98,10 @@ function inferRetrievalMode(prompt: string): RetrievalMode {
     return "summary"
   }
 
+  if (/\b(relazione|relationship|collega|connected|compare|confronta|dipenden|depends|between|tra|entity|entities|tema|temi)\b/.test(normalizedPrompt)) {
+    return "hybrid_graph"
+  }
+
   return "semantic"
 }
 
@@ -155,8 +163,47 @@ function createFallbackRetrievalQuery(input: GenerateReplyInput): GenerateRetrie
     targetDocumentNames: input.documents
       .filter((document) => normalizeText(input.prompt).includes(normalizeText(document.name).replace(/\.[^.]+$/, "")))
       .map((document) => document.name),
+    graphDepth: 1,
+    graphEntities: [],
     rationale: "Fallback retrieval query built from the latest user question and recent user messages.",
   }
+}
+
+function mergeRetrievedChunks(
+  semanticChunks: NonNullable<GenerateReplyInput["retrievedChunks"]>,
+  graphChunks: NonNullable<GenerateReplyInput["retrievedChunks"]>
+) {
+  const mergedByParentId = new Map<string, NonNullable<GenerateReplyInput["retrievedChunks"]>[number]>()
+
+  for (const chunk of semanticChunks) {
+    mergedByParentId.set(chunk.parentChunkId, {
+      ...chunk,
+      retrievalSource: chunk.retrievalSource ?? "semantic",
+    })
+  }
+
+  for (const graphChunk of graphChunks) {
+    const existing = mergedByParentId.get(graphChunk.parentChunkId)
+
+    if (!existing) {
+      mergedByParentId.set(graphChunk.parentChunkId, graphChunk)
+      continue
+    }
+
+    mergedByParentId.set(graphChunk.parentChunkId, {
+      ...existing,
+      excerpt: existing.excerpt ?? graphChunk.excerpt,
+      graphEdgeTypes: Array.from(new Set([...(existing.graphEdgeTypes ?? []), ...(graphChunk.graphEdgeTypes ?? [])])),
+      graphEntityNames: Array.from(new Set([...(existing.graphEntityNames ?? []), ...(graphChunk.graphEntityNames ?? [])])),
+      matchedChildChunkIds: Array.from(new Set([...existing.matchedChildChunkIds, ...graphChunk.matchedChildChunkIds])),
+      matchedQueries: Array.from(new Set([...(existing.matchedQueries ?? []), ...(graphChunk.matchedQueries ?? [])])),
+      retrievalSource: "hybrid",
+      score: Math.min(1, existing.score * 0.6 + graphChunk.score * 0.4 + 0.1),
+      similarity: Math.max(existing.similarity, graphChunk.similarity),
+    })
+  }
+
+  return Array.from(mergedByParentId.values()).sort((left, right) => right.score - left.score)
 }
 
 export async function generateRagRetrievalContext({
@@ -165,9 +212,12 @@ export async function generateRagRetrievalContext({
   prompt,
   messages,
   llmClient,
+  retrieveGraphContext = retrieveGraphContextForWorkspace,
   retrieveParentChunks = retrieveParentChunksForWorkspace,
   additionalQueries = [],
   childMatchLimit,
+  graphDepth,
+  graphEntityQueries = [],
   parentChunkLimit,
   targetDocumentNames = [],
   signal,
@@ -204,17 +254,38 @@ export async function generateRagRetrievalContext({
   const resolvedTargetDocumentNames = Array.from(
     new Set([...(retrievalQueryResult.targetDocumentNames ?? []), ...targetDocumentNames])
   )
+  const graphQueries = Array.from(
+    new Set([...(retrievalQueryResult.graphEntities ?? []), ...graphEntityQueries, ...searchQueries])
+  )
   let retrievedChunks: GenerateReplyInput["retrievedChunks"] = []
 
   if (retrievalQueryResult.needsDocumentSearch && retrievalMode !== "none" && retrievalMode !== "inventory") {
     try {
-      retrievedChunks = await retrieveParentChunks(workspace.id, retrievalQuery, {
-        additionalQueries: searchQueries.slice(1),
-        limit: childMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40,
-        minSimilarity: workspace.semanticSearchThreshold ?? DEFAULT_MIN_SEMANTIC_SIMILARITY,
-        parentLimit: parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10,
-        targetDocumentNames: resolvedTargetDocumentNames,
-      })
+      const shouldUseSemantic = retrievalMode !== "graph"
+      const shouldUseGraph = retrievalMode === "graph" || retrievalMode === "hybrid_graph"
+      const [semanticChunks, graphChunks] = await Promise.all([
+        shouldUseSemantic
+          ? retrieveParentChunks(workspace.id, retrievalQuery, {
+              additionalQueries: searchQueries.slice(1),
+              limit: childMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40,
+              minSimilarity: workspace.semanticSearchThreshold ?? DEFAULT_MIN_SEMANTIC_SIMILARITY,
+              parentLimit: parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10,
+              targetDocumentNames: resolvedTargetDocumentNames,
+            })
+          : Promise.resolve([]),
+        shouldUseGraph
+          ? retrieveGraphContext(workspace.id, retrievalQuery, {
+              depth: graphDepth ?? retrievalQueryResult.graphDepth ?? workspace.graphSearchDepth ?? 1,
+              entityQueries: graphQueries,
+              limit: parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10,
+            })
+          : Promise.resolve([]),
+      ])
+
+      retrievedChunks = mergeRetrievedChunks(semanticChunks, graphChunks).slice(
+        0,
+        parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10
+      )
     } catch (error) {
       if (signal?.aborted) {
         throw error

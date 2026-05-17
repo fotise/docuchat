@@ -39,6 +39,7 @@ export function Header({ workspace }: HeaderProps) {
   const [searchResults, setSearchResults] = useState<RetrievedContextChunk[]>([])
   const [ragDebugContext, setRagDebugContext] = useState<RagRetrievalContext | null>(null)
   const [additionalQueries, setAdditionalQueries] = useState("")
+  const [graphEntityQueries, setGraphEntityQueries] = useState("")
   const [targetDocumentNames, setTargetDocumentNames] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
@@ -64,6 +65,7 @@ export function Header({ workspace }: HeaderProps) {
   const currentMessages = storedMessages ?? currentView?.initialMessages ?? []
   const semanticSearchThreshold = workspace.semanticSearchThreshold ?? DEFAULT_MIN_SEMANTIC_SIMILARITY
   const childMatchLimit = workspace.ragSearchChildMatchLimit ?? 40
+  const graphSearchDepth = workspace.graphSearchDepth ?? 1
   const parentChunkLimit = workspace.ragSearchParentChunkLimit ?? 10
 
   function handleExploreClick() {
@@ -113,6 +115,8 @@ export function Header({ workspace }: HeaderProps) {
         llmClient,
         additionalQueries: parseList(additionalQueries),
         childMatchLimit,
+        graphDepth: graphSearchDepth,
+        graphEntityQueries: parseList(graphEntityQueries),
         parentChunkLimit,
         targetDocumentNames: parseList(targetDocumentNames),
       })
@@ -142,6 +146,7 @@ export function Header({ workspace }: HeaderProps) {
     }
 
     void updateWorkspaceRagSearchSettings(workspace.id, {
+      graphSearchDepth,
       ragSearchChildMatchLimit: parsedValue,
       ragSearchParentChunkLimit: parentChunkLimit,
     })
@@ -155,8 +160,23 @@ export function Header({ workspace }: HeaderProps) {
     }
 
     void updateWorkspaceRagSearchSettings(workspace.id, {
+      graphSearchDepth,
       ragSearchChildMatchLimit: childMatchLimit,
       ragSearchParentChunkLimit: parsedValue,
+    })
+  }
+
+  function handleGraphDepthChange(value: string) {
+    const parsedValue = Number.parseInt(value, 10)
+
+    if (!Number.isFinite(parsedValue)) {
+      return
+    }
+
+    void updateWorkspaceRagSearchSettings(workspace.id, {
+      graphSearchDepth: parsedValue,
+      ragSearchChildMatchLimit: childMatchLimit,
+      ragSearchParentChunkLimit: parentChunkLimit,
     })
   }
 
@@ -309,7 +329,7 @@ export function Header({ workspace }: HeaderProps) {
                   </Button>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-5">
+                <div className="grid gap-3 md:grid-cols-6">
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
                       Similarity threshold
@@ -357,6 +377,21 @@ export function Header({ workspace }: HeaderProps) {
                   </label>
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Graph depth
+                    </span>
+                    <Input
+                      type="number"
+                      aria-label="Graph search depth"
+                      min={1}
+                      max={3}
+                      step={1}
+                      value={graphSearchDepth}
+                      onChange={(event) => handleGraphDepthChange(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
                       Target files
                     </span>
                     <Input
@@ -376,6 +411,18 @@ export function Header({ workspace }: HeaderProps) {
                       placeholder="query 1, query 2"
                       value={additionalQueries}
                       onChange={(event) => setAdditionalQueries(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block md:col-span-2">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Graph entities
+                    </span>
+                    <Input
+                      aria-label="Graph entity queries"
+                      placeholder="Customer retention, Competitor A"
+                      value={graphEntityQueries}
+                      onChange={(event) => setGraphEntityQueries(event.target.value)}
                       className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                     />
                   </label>
@@ -399,6 +446,10 @@ export function Header({ workspace }: HeaderProps) {
                     <span className="block text-sky-200/70">Targets</span>
                     <strong>{ragDebugContext.targetDocumentNames.join(", ") || "All files"}</strong>
                   </div>
+                  <div>
+                    <span className="block text-sky-200/70">Graph depth</span>
+                    <strong>{ragDebugContext.retrievalQueryResult.graphDepth ?? graphSearchDepth}</strong>
+                  </div>
                   <div className="md:col-span-2">
                     <span className="block text-sky-200/70">Generated query</span>
                     <span className="line-clamp-2 break-words">{ragDebugContext.retrievalQuery}</span>
@@ -414,17 +465,20 @@ export function Header({ workspace }: HeaderProps) {
             <div className="app-scrollbar min-h-0 flex-1 overflow-auto p-5">
               <div className="app-scrollbar overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/20">
                 <table
-                  className="min-w-[1320px] table-fixed text-left text-xs"
+                  className="min-w-[1560px] table-fixed text-left text-xs"
                   aria-label="Semantic search results table"
                 >
                   <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
                     <tr>
                       <th className="w-20 px-3 py-3 font-bold">Score</th>
+                      <th className="w-24 px-3 py-3 font-bold">Source</th>
                       <th className="w-24 px-3 py-3 font-bold">Similarity</th>
                       <th className="w-24 px-3 py-3 font-bold">Keyword</th>
                       <th className="w-44 px-3 py-3 font-bold">File</th>
                       <th className="w-24 px-3 py-3 font-bold">Pages</th>
                       <th className="w-56 px-3 py-3 font-bold">Parent ID</th>
+                      <th className="w-56 px-3 py-3 font-bold">Graph entities</th>
+                      <th className="w-40 px-3 py-3 font-bold">Graph edges</th>
                       <th className="w-72 px-3 py-3 font-bold">Matched queries</th>
                       <th className="w-72 px-3 py-3 font-bold">Child matches</th>
                       <th className="w-96 px-3 py-3 font-bold">RAG excerpt</th>
@@ -433,7 +487,7 @@ export function Header({ workspace }: HeaderProps) {
                   <tbody className="divide-y divide-white/10">
                     {isSearching ? (
                       <tr>
-                        <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
+                        <td className="px-3 py-5 text-center text-slate-300" colSpan={12}>
                           Simulating chat RAG retrieval…
                         </td>
                       </tr>
@@ -442,6 +496,9 @@ export function Header({ workspace }: HeaderProps) {
                         <tr key={chunk.parentChunkId} className="align-top text-slate-200">
                           <td className="px-3 py-3 font-semibold text-emerald-100">
                             {formatScore(chunk.score)}
+                          </td>
+                          <td className="px-3 py-3 text-slate-300">
+                            {chunk.retrievalSource ?? "semantic"}
                           </td>
                           <td className="px-3 py-3 text-slate-300">
                             {formatSimilarity(chunk.similarity)}
@@ -462,6 +519,12 @@ export function Header({ workspace }: HeaderProps) {
                               {chunk.parentChunkId}
                             </span>
                           </td>
+                          <td className="px-3 py-3 text-slate-300" title={chunk.graphEntityNames?.join("\n") ?? ""}>
+                            {chunk.graphEntityNames?.join(", ") ?? "—"}
+                          </td>
+                          <td className="px-3 py-3 text-slate-300" title={chunk.graphEdgeTypes?.join("\n") ?? ""}>
+                            {chunk.graphEdgeTypes?.join(", ") ?? "—"}
+                          </td>
                           <td className="px-3 py-3 text-slate-300" title={chunk.matchedQueries?.join("\n") ?? ""}>
                             {chunk.matchedQueries?.join(" | ") ?? "—"}
                           </td>
@@ -475,13 +538,13 @@ export function Header({ workspace }: HeaderProps) {
                       ))
                     ) : searchQuery.trim() ? (
                       <tr>
-                        <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
+                        <td className="px-3 py-5 text-center text-slate-300" colSpan={12}>
                           No RAG parent chunks found for this plan.
                         </td>
                       </tr>
                     ) : (
                       <tr>
-                        <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
+                        <td className="px-3 py-5 text-center text-slate-300" colSpan={12}>
                           Enter a chat question to simulate retrieval, inspect generated queries, and tune RAG parameters.
                         </td>
                       </tr>

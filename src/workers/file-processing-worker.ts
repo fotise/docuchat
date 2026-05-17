@@ -34,6 +34,8 @@ self.onmessage = async (event: MessageEvent<FileProcessingRequest>) => {
         ? (result.parentChunkCount ?? 0) + (result.childChunkCount ?? 0)
         : undefined,
       embeddingCount: result.embeddingCount,
+      graphEdgeCount: result.graphEdgeCount,
+      graphEntityCount: result.graphEntityCount,
       pageCount: result.pageCount,
       parentChunkCount: result.parentChunkCount,
       processor: result.processor,

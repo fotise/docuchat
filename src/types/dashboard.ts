@@ -92,6 +92,8 @@ export interface UploadedDocument {
   chunkCount?: number
   parentChunkCount?: number
   childChunkCount?: number
+  graphEdgeCount?: number
+  graphEntityCount?: number
   pageCount?: number
   toBeProcessed?: boolean
   processingStatus?: FileProcessingStatus
@@ -109,6 +111,7 @@ export interface WorkspaceRouteConfig {
   semanticSearchThreshold?: number
   ragSearchChildMatchLimit?: number
   ragSearchParentChunkLimit?: number
+  graphSearchDepth?: number
   tabs: WorkspaceTab[]
   views: WorkspaceView[]
   uploadedDocuments: UploadedDocument[]

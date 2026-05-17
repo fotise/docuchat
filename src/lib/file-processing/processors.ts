@@ -1,5 +1,6 @@
 import {
   replaceDocumentChunks,
+  replaceDocumentGraph,
   type StoredDocumentChunk,
 } from "@/lib/chat-history/indexed-db"
 import {
@@ -12,6 +13,7 @@ import {
   generateEmbeddings,
   type GeneratedEmbedding,
 } from "./embeddings"
+import { buildDocumentGraph } from "./graph-extraction"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
 export type FileProcessorKind =
@@ -36,6 +38,8 @@ export interface FileProcessingResult {
   processor: FileProcessorKind
   childChunkCount?: number
   embeddingCount?: number
+  graphEdgeCount?: number
+  graphEntityCount?: number
   pageCount?: number
   parentChunkCount?: number
 }
@@ -253,6 +257,20 @@ export async function processPdfPipeline(
   // Step 4: persist the searchable chunk index and embeddings in IndexedDB.
   await replaceDocumentChunks(job.workspaceId, job.documentId, storedChunks)
 
+  // Step 5: create and persist a local co-occurrence graph for Graph RAG.
+  const documentGraph = buildDocumentGraph(
+    job.workspaceId,
+    job.documentId,
+    storedChunks
+  )
+
+  await replaceDocumentGraph(
+    job.workspaceId,
+    job.documentId,
+    documentGraph.entities,
+    documentGraph.edges
+  )
+
   return {
     byteLength: job.content.byteLength,
     childChunkCount: parentChunks.reduce(
@@ -260,6 +278,8 @@ export async function processPdfPipeline(
       0
     ),
     embeddingCount: childEmbeddings.length,
+    graphEdgeCount: documentGraph.edges.length,
+    graphEntityCount: documentGraph.entities.length,
     pageCount: pages.length,
     parentChunkCount: parentChunks.length,
     processor: "pdf",

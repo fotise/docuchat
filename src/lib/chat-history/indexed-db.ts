@@ -7,11 +7,13 @@ import type {
 } from "@/types/dashboard"
 
 const DB_NAME = "docuchat"
-const DB_VERSION = 4
+const DB_VERSION = 5
 const MESSAGE_STORE = "messages"
 const WORKSPACE_STORE = "workspaces"
 const DOCUMENT_STORE = "documents"
 const DOCUMENT_CHUNK_STORE = "documentChunks"
+const GRAPH_ENTITY_STORE = "graphEntities"
+const GRAPH_EDGE_STORE = "graphEdges"
 const MESSAGE_LIMIT = 100
 
 export interface StoredChatMessage extends WorkspaceMessage {
@@ -41,6 +43,55 @@ export interface StoredDocumentChunk {
   embeddingModel?: string
   order: number
   createdAt: number
+}
+
+export type GraphEntityType =
+  | "date"
+  | "location"
+  | "metric"
+  | "organization"
+  | "person"
+  | "product"
+  | "topic"
+  | "unknown"
+
+export type GraphEdgeType = "co_occurs_with" | "mentioned_in" | "related_to" | "unknown"
+
+export interface GraphMention {
+  documentId: string
+  chunkId: string
+  parentChunkId?: string
+  pageNumbers: number[]
+  text: string
+}
+
+export interface StoredGraphEntity {
+  id: string
+  workspaceId: string
+  documentId?: string
+  name: string
+  normalizedName: string
+  type: GraphEntityType
+  aliases: string[]
+  mentions: GraphMention[]
+  confidence: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface StoredGraphEdge {
+  id: string
+  workspaceId: string
+  sourceEntityId: string
+  targetEntityId: string
+  type: GraphEdgeType
+  documentIds: string[]
+  chunkIds: string[]
+  weight: number
+  evidenceText: string[]
+  confidence: number
+  createdAt: number
+  updatedAt: number
 }
 
 interface DocuChatDb extends DBSchema {
@@ -76,6 +127,27 @@ interface DocuChatDb extends DBSchema {
       workspaceId: string
       documentId: string
       byDocumentOrder: [string, number]
+    }
+  }
+  graphEntities: {
+    key: string
+    value: StoredGraphEntity
+    indexes: {
+      workspaceId: string
+      documentId: string
+      normalizedName: string
+      byWorkspaceEntity: [string, string]
+    }
+  }
+  graphEdges: {
+    key: string
+    value: StoredGraphEdge
+    indexes: {
+      workspaceId: string
+      sourceEntityId: string
+      targetEntityId: string
+      byWorkspaceSource: [string, string]
+      byWorkspaceTarget: [string, string]
     }
   }
 }
@@ -125,6 +197,29 @@ function getDb() {
         chunksStore.createIndex("workspaceId", "workspaceId")
         chunksStore.createIndex("documentId", "documentId")
         chunksStore.createIndex("byDocumentOrder", ["documentId", "order"])
+      }
+
+      if (!db.objectStoreNames.contains(GRAPH_ENTITY_STORE)) {
+        const graphEntitiesStore = db.createObjectStore(GRAPH_ENTITY_STORE, {
+          keyPath: "id",
+        })
+
+        graphEntitiesStore.createIndex("workspaceId", "workspaceId")
+        graphEntitiesStore.createIndex("documentId", "documentId")
+        graphEntitiesStore.createIndex("normalizedName", "normalizedName")
+        graphEntitiesStore.createIndex("byWorkspaceEntity", ["workspaceId", "normalizedName"])
+      }
+
+      if (!db.objectStoreNames.contains(GRAPH_EDGE_STORE)) {
+        const graphEdgesStore = db.createObjectStore(GRAPH_EDGE_STORE, {
+          keyPath: "id",
+        })
+
+        graphEdgesStore.createIndex("workspaceId", "workspaceId")
+        graphEdgesStore.createIndex("sourceEntityId", "sourceEntityId")
+        graphEdgesStore.createIndex("targetEntityId", "targetEntityId")
+        graphEdgesStore.createIndex("byWorkspaceSource", ["workspaceId", "sourceEntityId"])
+        graphEdgesStore.createIndex("byWorkspaceTarget", ["workspaceId", "targetEntityId"])
       }
     },
   })
@@ -340,6 +435,96 @@ export async function replaceDocumentChunks(
   await tx.done
 }
 
+export async function replaceDocumentGraph(
+  workspaceId: string,
+  documentId: string,
+  entities: StoredGraphEntity[],
+  edges: StoredGraphEdge[]
+) {
+  const db = await getDb()
+  const tx = db.transaction([GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
+  const entityStore = tx.objectStore(GRAPH_ENTITY_STORE)
+  const edgeStore = tx.objectStore(GRAPH_EDGE_STORE)
+  const entityDocumentIndex = entityStore.index("documentId")
+  const edgeWorkspaceIndex = edgeStore.index("workspaceId")
+  const entityIdsToDelete = new Set<string>()
+
+  for await (const cursor of entityDocumentIndex.iterate(documentId)) {
+    entityIdsToDelete.add(cursor.value.id)
+    await cursor.delete()
+  }
+
+  for await (const cursor of edgeWorkspaceIndex.iterate(workspaceId)) {
+    if (
+      cursor.value.documentIds.includes(documentId)
+      || entityIdsToDelete.has(cursor.value.sourceEntityId)
+      || entityIdsToDelete.has(cursor.value.targetEntityId)
+    ) {
+      await cursor.delete()
+    }
+  }
+
+  const now = Date.now()
+
+  for (const entity of entities) {
+    await entityStore.put({
+      ...entity,
+      workspaceId,
+      documentId: entity.documentId ?? documentId,
+      createdAt: entity.createdAt || now,
+      updatedAt: now,
+    })
+  }
+
+  for (const edge of edges) {
+    await edgeStore.put({
+      ...edge,
+      workspaceId,
+      createdAt: edge.createdAt || now,
+      updatedAt: now,
+    })
+  }
+
+  await tx.done
+}
+
+export async function getWorkspaceGraphEntities(workspaceId: string) {
+  const db = await getDb()
+  return db.getAllFromIndex(GRAPH_ENTITY_STORE, "workspaceId", workspaceId)
+}
+
+export async function getWorkspaceGraphEdges(workspaceId: string) {
+  const db = await getDb()
+  return db.getAllFromIndex(GRAPH_EDGE_STORE, "workspaceId", workspaceId)
+}
+
+export async function deleteDocumentGraph(documentId: string) {
+  const db = await getDb()
+  const tx = db.transaction([GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
+  const entityStore = tx.objectStore(GRAPH_ENTITY_STORE)
+  const edgeStore = tx.objectStore(GRAPH_EDGE_STORE)
+  const entityDocumentIndex = entityStore.index("documentId")
+  const edgeWorkspaceIndex = edgeStore.index("workspaceId")
+  const entityIdsToDelete = new Set<string>()
+
+  for await (const cursor of entityDocumentIndex.iterate(documentId)) {
+    entityIdsToDelete.add(cursor.value.id)
+    await cursor.delete()
+  }
+
+  for await (const cursor of edgeWorkspaceIndex.iterate()) {
+    if (
+      cursor.value.documentIds.includes(documentId)
+      || entityIdsToDelete.has(cursor.value.sourceEntityId)
+      || entityIdsToDelete.has(cursor.value.targetEntityId)
+    ) {
+      await cursor.delete()
+    }
+  }
+
+  await tx.done
+}
+
 export async function deleteDocumentChunks(documentId: string) {
   const db = await getDb()
   const tx = db.transaction(DOCUMENT_CHUNK_STORE, "readwrite")
@@ -359,8 +544,11 @@ export async function updateWorkspaceDocument(document: StoredWorkspaceDocument)
 
 export async function deleteWorkspaceDocument(documentId: string) {
   const db = await getDb()
-  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE], "readwrite")
+  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE, GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
   const chunkDocumentIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("documentId")
+  const graphEntityDocumentIndex = tx.objectStore(GRAPH_ENTITY_STORE).index("documentId")
+  const graphEdgeWorkspaceIndex = tx.objectStore(GRAPH_EDGE_STORE).index("workspaceId")
+  const entityIdsToDelete = new Set<string>()
 
   await tx.objectStore(DOCUMENT_STORE).delete(documentId)
 
@@ -368,20 +556,45 @@ export async function deleteWorkspaceDocument(documentId: string) {
     await cursor.delete()
   }
 
+  for await (const cursor of graphEntityDocumentIndex.iterate(documentId)) {
+    entityIdsToDelete.add(cursor.value.id)
+    await cursor.delete()
+  }
+
+  for await (const cursor of graphEdgeWorkspaceIndex.iterate()) {
+    if (
+      cursor.value.documentIds.includes(documentId)
+      || entityIdsToDelete.has(cursor.value.sourceEntityId)
+      || entityIdsToDelete.has(cursor.value.targetEntityId)
+    ) {
+      await cursor.delete()
+    }
+  }
+
   await tx.done
 }
 
 export async function deleteWorkspaceDocuments(workspaceId: string) {
   const db = await getDb()
-  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE], "readwrite")
+  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE, GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
   const documentWorkspaceIndex = tx.objectStore(DOCUMENT_STORE).index("workspaceId")
   const chunkWorkspaceIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("workspaceId")
+  const graphEntityWorkspaceIndex = tx.objectStore(GRAPH_ENTITY_STORE).index("workspaceId")
+  const graphEdgeWorkspaceIndex = tx.objectStore(GRAPH_EDGE_STORE).index("workspaceId")
 
   for await (const cursor of documentWorkspaceIndex.iterate(workspaceId)) {
     await cursor.delete()
   }
 
   for await (const cursor of chunkWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  for await (const cursor of graphEntityWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  for await (const cursor of graphEdgeWorkspaceIndex.iterate(workspaceId)) {
     await cursor.delete()
   }
 
@@ -393,12 +606,14 @@ export async function deleteWorkspace(workspaceId: string) {
   await db.delete(WORKSPACE_STORE, workspaceId)
 
   const tx = db.transaction(
-    [MESSAGE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE],
+    [MESSAGE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE, GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE],
     "readwrite"
   )
   const messageWorkspaceIndex = tx.objectStore(MESSAGE_STORE).index("workspaceId")
   const documentWorkspaceIndex = tx.objectStore(DOCUMENT_STORE).index("workspaceId")
   const chunkWorkspaceIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("workspaceId")
+  const graphEntityWorkspaceIndex = tx.objectStore(GRAPH_ENTITY_STORE).index("workspaceId")
+  const graphEdgeWorkspaceIndex = tx.objectStore(GRAPH_EDGE_STORE).index("workspaceId")
 
   for await (const cursor of messageWorkspaceIndex.iterate(workspaceId)) {
     await cursor.delete()
@@ -412,13 +627,21 @@ export async function deleteWorkspace(workspaceId: string) {
     await cursor.delete()
   }
 
+  for await (const cursor of graphEntityWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  for await (const cursor of graphEdgeWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
   await tx.done
 }
 
 export async function clearDocuChatData() {
   const db = await getDb()
   const tx = db.transaction(
-    [MESSAGE_STORE, WORKSPACE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE],
+    [MESSAGE_STORE, WORKSPACE_STORE, DOCUMENT_STORE, DOCUMENT_CHUNK_STORE, GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE],
     "readwrite"
   )
 
@@ -427,6 +650,8 @@ export async function clearDocuChatData() {
     tx.objectStore(WORKSPACE_STORE).clear(),
     tx.objectStore(DOCUMENT_STORE).clear(),
     tx.objectStore(DOCUMENT_CHUNK_STORE).clear(),
+    tx.objectStore(GRAPH_ENTITY_STORE).clear(),
+    tx.objectStore(GRAPH_EDGE_STORE).clear(),
     tx.done,
   ])
 }

@@ -24,7 +24,7 @@ export interface GenerateReplyDocumentInfo {
 
 export type GenerateRetrievalQueryInput = GenerateReplyInput
 
-export type RetrievalMode = "none" | "inventory" | "semantic" | "targeted_file" | "summary"
+export type RetrievalMode = "none" | "inventory" | "semantic" | "targeted_file" | "summary" | "graph" | "hybrid_graph"
 
 export type RetrievalConfidence = "high" | "medium" | "low" | "none"
 
@@ -36,6 +36,8 @@ export interface GenerateRetrievalQueryResult {
   searchQueries?: string[]
   targetDocumentNames?: string[]
   resolvedReferences?: string[]
+  graphDepth?: number
+  graphEntities?: string[]
   rationale?: string
 }
 
@@ -50,7 +52,10 @@ export interface RetrievedContextChunk {
   similarity: number
   text: string
   excerpt?: string
+  graphEdgeTypes?: string[]
+  graphEntityNames?: string[]
   keywordScore?: number
+  retrievalSource?: "semantic" | "graph" | "hybrid"
   sourceScore?: number
 }
 

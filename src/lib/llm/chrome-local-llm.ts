@@ -140,6 +140,9 @@ function buildRetrievedContext({ retrievedChunks }: GenerateReplyInput) {
       `Matched child chunks: ${chunk.matchedChildChunkIds.join(", ")}`,
       chunk.keywordScore !== undefined ? `Keyword score: ${chunk.keywordScore.toFixed(3)}` : undefined,
       chunk.sourceScore !== undefined && chunk.sourceScore > 0 ? `Source match score: ${chunk.sourceScore.toFixed(3)}` : undefined,
+      chunk.retrievalSource ? `Retrieval source: ${chunk.retrievalSource}` : undefined,
+      chunk.graphEntityNames?.length ? `Graph entities: ${chunk.graphEntityNames.join(", ")}` : undefined,
+      chunk.graphEdgeTypes?.length ? `Graph edge types: ${chunk.graphEdgeTypes.join(", ")}` : undefined,
       `Relevant excerpt:\n${chunk.excerpt ?? chunk.text}`,
     ].filter(Boolean).join("\n")
   })
@@ -163,6 +166,8 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
     "Every factual claim about document contents must be supported by retrieved evidence. Use citations like [File.pdf, p. 3] when pages are available.",
     "Never treat the file list as evidence of file contents. The file list only proves inventory, names, types, sizes, and processing status.",
     "If retrieved chunks are weak, partial, or unrelated, say so briefly and answer only from reliable context or ask a focused follow-up question.",
+    "When graph context is present, use it to reason about relationships and cross-document links, but ground every factual answer in the retrieved evidence excerpts.",
+    "Do not invent graph relationships that are not listed in the context.",
     "If no retrieved evidence supports a document-content question, say that you could not find supporting evidence in the indexed documents.",
     "For file inventory questions, such as how many files exist, file names, types, sizes, or processing status, answer directly from the workspace files list without asking for document contents.",
     "Prefer processed files. If a file is still processing or waiting to be processed, say that its contents may not be available yet.",
@@ -208,9 +213,11 @@ function buildRetrievalQueryPrompt({ prompt, messages, workspaceTitle, tabLabel 
     conversation ? `Conversation:\n${conversation}` : "Conversation: none",
     `Latest user question:\n${prompt}`,
     "Return only strict JSON with these fields:",
-    `{"intent":"short intent","retrievalMode":"semantic","needsDocumentSearch":true,"searchQuery":"primary standalone retrieval query","searchQueries":["primary standalone retrieval query","alternate query with synonyms or resolved references"],"targetDocumentNames":["optional exact file names mentioned by the user"],"resolvedReferences":["short resolved follow-up references"],"rationale":"short rationale"}`,
+    `{"intent":"short intent","retrievalMode":"semantic","needsDocumentSearch":true,"searchQuery":"primary standalone retrieval query","searchQueries":["primary standalone retrieval query","alternate query with synonyms or resolved references"],"targetDocumentNames":["optional exact file names mentioned by the user"],"resolvedReferences":["short resolved follow-up references"],"graphEntities":["entity or topic names for graph traversal"],"graphDepth":1,"rationale":"short rationale"}`,
     "The searchQuery must be standalone: rewrite vague follow-ups like 'and that one?' using the relevant entities from the conversation.",
-    "Use retrievalMode one of: none, inventory, semantic, targeted_file, summary.",
+    "Use retrievalMode one of: none, inventory, semantic, targeted_file, summary, graph, hybrid_graph.",
+    "Use graph for relationship-only questions about entities, dependencies, links, or co-occurrence.",
+    "Use hybrid_graph for comparisons, cross-document synthesis, recurring themes, or questions that need both evidence chunks and entity relationships.",
     "Use targeted_file when the user names or clearly refers to a specific file. Put exact file names in targetDocumentNames.",
     "Use summary for broad summarization requests; include broader searchQueries that cover the named file or workspace topic.",
     "Use inventory and needsDocumentSearch=false for file count/name/type/status questions.",
@@ -242,6 +249,9 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
     const resolvedReferences = Array.isArray(parsed.resolvedReferences)
       ? parsed.resolvedReferences.filter((reference): reference is string => typeof reference === "string")
       : undefined
+    const graphEntities = Array.isArray(parsed.graphEntities)
+      ? parsed.graphEntities.filter((entity): entity is string => typeof entity === "string")
+      : undefined
 
     return {
       intent: typeof parsed.intent === "string" ? parsed.intent : "Answer the latest user question.",
@@ -253,6 +263,8 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
       searchQueries,
       targetDocumentNames,
       resolvedReferences,
+      graphDepth: typeof parsed.graphDepth === "number" ? parsed.graphDepth : undefined,
+      graphEntities,
       rationale: typeof parsed.rationale === "string" ? parsed.rationale : undefined,
     }
   } catch {

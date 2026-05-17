@@ -331,6 +331,7 @@ export async function retrieveParentChunksForWorkspace(
         matchedQueries: [retrievalQuery],
         pageNumbers: parentChunk.pageNumbers,
         parentChunkId,
+        retrievalSource: "semantic",
         score: result.score,
         similarity: result.similarity,
         text: parentChunk.text,

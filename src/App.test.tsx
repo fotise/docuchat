@@ -5,10 +5,15 @@ import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
 import {
   clearDocuChatData,
   getDocumentChunks,
+  getWorkspaceGraphEdges,
+  getWorkspaceGraphEntities,
   getWorkspaceDocuments,
   replaceDocumentChunks,
+  replaceDocumentGraph,
 } from "@/lib/chat-history/indexed-db"
 import { createParentChildChunks } from "@/lib/file-processing/chunking"
+import { buildDocumentGraph } from "@/lib/file-processing/graph-extraction"
+import { retrieveGraphContextForWorkspace } from "@/lib/file-processing/graph-search"
 import {
   getFileProcessorKind,
   processPdfPipeline,
@@ -17,7 +22,7 @@ import {
   retrieveParentChunksForWorkspace,
   semanticSearchWorkspace,
 } from "@/lib/file-processing/semantic-search"
-import { generateRagReply } from "@/lib/chat/rag-chat"
+import { generateRagReply, generateRagRetrievalContext } from "@/lib/chat/rag-chat"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
@@ -106,8 +111,10 @@ describe("App", () => {
     expect(screen.getByRole("spinbutton", { name: "Semantic search threshold" })).toHaveValue(0.3)
     expect(screen.getByRole("spinbutton", { name: "RAG child match limit" })).toHaveValue(40)
     expect(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" })).toHaveValue(10)
+    expect(screen.getByRole("spinbutton", { name: "Graph search depth" })).toHaveValue(1)
     expect(screen.getByRole("textbox", { name: "RAG target document names" })).toBeTruthy()
     expect(screen.getByRole("textbox", { name: "RAG additional queries" })).toBeTruthy()
+    expect(screen.getByRole("textbox", { name: "Graph entity queries" })).toBeTruthy()
     expect(screen.getByRole("table", { name: "Semantic search results table" })).toBeTruthy()
 
     fireEvent.change(screen.getByRole("spinbutton", { name: "Semantic search threshold" }), {
@@ -119,6 +126,9 @@ describe("App", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" }), {
       target: { value: "8" },
     })
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Graph search depth" }), {
+      target: { value: "2" },
+    })
 
     await waitFor(() => {
       const workspace = useWorkspaceStore
@@ -126,6 +136,7 @@ describe("App", () => {
         .workspaces.find((item) => item.id === "market-research")
 
       expect(workspace?.semanticSearchThreshold).toBe(0.6)
+      expect(workspace?.graphSearchDepth).toBe(2)
       expect(workspace?.ragSearchChildMatchLimit).toBe(55)
       expect(workspace?.ragSearchParentChunkLimit).toBe(8)
     })
@@ -358,6 +369,122 @@ describe("App", () => {
       },
       keywordScore: 1,
       sourceScore: 1,
+    })
+  })
+
+  it("builds and searches a local document graph for Graph RAG", async () => {
+    const chunks = [
+      {
+        id: "parent-graph-1",
+        workspaceId: "market-research",
+        documentId: "doc-graph",
+        chunkId: "parent-graph-1",
+        level: "parent" as const,
+        text: "Customer retention is linked with Customer Health and churn risk.",
+        pageNumbers: [5],
+        order: 1,
+        createdAt: 1,
+      },
+      {
+        id: "child-graph-1",
+        workspaceId: "market-research",
+        documentId: "doc-graph",
+        chunkId: "child-graph-1",
+        parentChunkId: "parent-graph-1",
+        level: "child" as const,
+        text: "Customer retention is linked with Customer Health and churn risk.",
+        pageNumbers: [5],
+        order: 2,
+        createdAt: 2,
+      },
+    ]
+    const graph = buildDocumentGraph("market-research", "doc-graph", chunks)
+
+    await replaceDocumentChunks("market-research", "doc-graph", chunks)
+    await replaceDocumentGraph("market-research", "doc-graph", graph.entities, graph.edges)
+
+    expect((await getWorkspaceGraphEntities("market-research")).length).toBeGreaterThan(0)
+    expect((await getWorkspaceGraphEdges("market-research")).length).toBeGreaterThan(0)
+
+    const graphChunks = await retrieveGraphContextForWorkspace(
+      "market-research",
+      "relationship between retention and customer health",
+      { depth: 1 }
+    )
+
+    expect(graphChunks[0]).toMatchObject({
+      graphEdgeTypes: ["co_occurs_with"],
+      parentChunkId: "parent-graph-1",
+      retrievalSource: "graph",
+    })
+    expect(graphChunks[0].graphEntityNames?.join(" ").toLowerCase()).toContain("retention")
+  })
+
+  it("merges graph context into hybrid graph RAG retrieval", async () => {
+    const workspace = dashboardConfig.workspaces[0]
+    const llmClient: LlmClient = {
+      id: "hybrid-graph-test-llm",
+      label: "Hybrid Graph Test LLM",
+      isAvailable: async () => true,
+      generateRetrievalQuery: async () => ({
+        graphDepth: 2,
+        graphEntities: ["Customer retention", "Customer Health"],
+        intent: "Explain relationships between retention and customer health.",
+        needsDocumentSearch: true,
+        retrievalMode: "hybrid_graph",
+        searchQuery: "customer retention customer health relationship",
+      }),
+      generateReply: async () => "not used",
+    }
+
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "How are retention and customer health related?",
+      messages: [],
+      llmClient,
+      retrieveParentChunks: async () => [
+        {
+          documentId: "doc-1",
+          documentName: "Market_Overview.pdf",
+          matchedChildChunkIds: ["child-semantic"],
+          pageNumbers: [3],
+          parentChunkId: "parent-1",
+          retrievalSource: "semantic",
+          score: 0.7,
+          similarity: 0.75,
+          text: "Retention improved with customer health.",
+        },
+      ],
+      retrieveGraphContext: async (_workspaceId, _query, options) => {
+        expect(options.depth).toBe(2)
+        expect(options.entityQueries).toContain("Customer retention")
+
+        return [
+          {
+            documentId: "doc-1",
+            documentName: "Market_Overview.pdf",
+            graphEdgeTypes: ["co_occurs_with"],
+            graphEntityNames: ["Customer retention", "Customer Health"],
+            matchedChildChunkIds: ["child-graph"],
+            pageNumbers: [3],
+            parentChunkId: "parent-1",
+            retrievalSource: "graph",
+            score: 0.8,
+            similarity: 0.8,
+            text: "Retention improved with customer health.",
+          },
+        ]
+      },
+    })
+
+    expect(context.retrievalMode).toBe("hybrid_graph")
+    expect(context.retrievedChunks[0]).toMatchObject({
+      graphEdgeTypes: ["co_occurs_with"],
+      graphEntityNames: ["Customer retention", "Customer Health"],
+      matchedChildChunkIds: ["child-semantic", "child-graph"],
+      parentChunkId: "parent-1",
+      retrievalSource: "hybrid",
     })
   })
 

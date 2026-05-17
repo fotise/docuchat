@@ -2,6 +2,7 @@ import { create } from "zustand"
 import {
   addWorkspaceDocuments,
   deleteDocumentChunks,
+  deleteDocumentGraph,
   deleteWorkspaceDocuments as deleteStoredWorkspaceDocuments,
   deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
   deleteWorkspace as deleteStoredWorkspace,
@@ -30,6 +31,8 @@ interface FileProcessingWorkerResult {
   chunkCount?: number
   embeddingCount?: number
   errorMessage?: string
+  graphEdgeCount?: number
+  graphEntityCount?: number
   pageCount?: number
   parentChunkCount?: number
 }
@@ -59,7 +62,7 @@ interface WorkspaceStoreState {
   ) => Promise<void>
   updateWorkspaceRagSearchSettings: (
     workspaceId: string,
-    settings: Pick<WorkspaceRouteConfig, "ragSearchChildMatchLimit" | "ragSearchParentChunkLimit">
+    settings: Pick<WorkspaceRouteConfig, "graphSearchDepth" | "ragSearchChildMatchLimit" | "ragSearchParentChunkLimit">
   ) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
   processNextWorkspaceDocument: (
@@ -149,7 +152,7 @@ function updateWorkspaceDocumentState(
   processingStatus: FileProcessingStatus,
   metadata: Pick<
     UploadedDocument,
-    "childChunkCount" | "chunkCount" | "pageCount" | "parentChunkCount"
+    "childChunkCount" | "chunkCount" | "graphEdgeCount" | "graphEntityCount" | "pageCount" | "parentChunkCount"
   > = {}
 ) {
   return {
@@ -340,6 +343,10 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }
 
     const normalizedSettings = {
+      graphSearchDepth: Math.min(
+        3,
+        Math.max(1, settings.graphSearchDepth ?? workspace.graphSearchDepth ?? 1)
+      ),
       ragSearchChildMatchLimit: Math.min(
         100,
         Math.max(5, settings.ragSearchChildMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40)
@@ -353,6 +360,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     if (
       workspace.ragSearchChildMatchLimit === normalizedSettings.ragSearchChildMatchLimit
       && workspace.ragSearchParentChunkLimit === normalizedSettings.ragSearchParentChunkLimit
+      && workspace.graphSearchDepth === normalizedSettings.graphSearchDepth
     ) {
       return
     }
@@ -560,6 +568,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         {
           childChunkCount: result.childChunkCount,
           chunkCount: result.chunkCount,
+          graphEdgeCount: result.graphEdgeCount,
+          graphEntityCount: result.graphEntityCount,
           pageCount: result.pageCount,
           parentChunkCount: result.parentChunkCount,
         }
@@ -571,6 +581,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           ...currentStoredDocument,
           childChunkCount: result.childChunkCount,
           chunkCount: result.chunkCount,
+          graphEdgeCount: result.graphEdgeCount,
+          graphEntityCount: result.graphEntityCount,
           pageCount: result.pageCount,
           parentChunkCount: result.parentChunkCount,
           tone: "blue",
@@ -627,6 +639,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       {
         childChunkCount: undefined,
         chunkCount: undefined,
+        graphEdgeCount: undefined,
+        graphEntityCount: undefined,
         pageCount: undefined,
         parentChunkCount: undefined,
       }
@@ -634,12 +648,15 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     const storedDocument = await getWorkspaceDocument(documentId)
 
     await deleteDocumentChunks(documentId)
+    await deleteDocumentGraph(documentId)
 
     if (storedDocument) {
       await updateStoredWorkspaceDocument({
         ...storedDocument,
         childChunkCount: undefined,
         chunkCount: undefined,
+        graphEdgeCount: undefined,
+        graphEntityCount: undefined,
         pageCount: undefined,
         parentChunkCount: undefined,
         tone: "gray",
