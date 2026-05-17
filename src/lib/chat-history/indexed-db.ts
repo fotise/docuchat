@@ -298,6 +298,21 @@ export async function getDocumentChunks(documentId: string) {
   return db.getAllFromIndex(DOCUMENT_CHUNK_STORE, "byDocumentOrder", range)
 }
 
+export async function getWorkspaceDocumentChunks(workspaceId: string) {
+  const db = await getDb()
+  const chunks = await db.getAllFromIndex(
+    DOCUMENT_CHUNK_STORE,
+    "workspaceId",
+    workspaceId
+  )
+
+  return chunks.sort((a, b) => {
+    const documentOrder = a.documentId.localeCompare(b.documentId)
+
+    return documentOrder === 0 ? a.order - b.order : documentOrder
+  })
+}
+
 export async function replaceDocumentChunks(
   workspaceId: string,
   documentId: string,

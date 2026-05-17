@@ -13,6 +13,7 @@ import {
   getFileProcessorKind,
   processPdfPipeline,
 } from "@/lib/file-processing/processors"
+import { semanticSearchWorkspace } from "@/lib/file-processing/semantic-search"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
@@ -87,6 +88,102 @@ describe("App", () => {
     renderApp()
 
     expect(await screen.findAllByText("Market Research")).not.toHaveLength(0)
+  })
+
+  it("opens semantic search from the header search control", async () => {
+    renderApp()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open semantic search" }))
+
+    expect(await screen.findByRole("dialog", { name: "Semantic search" })).toBeTruthy()
+    expect(screen.getByRole("searchbox", { name: "Semantic search query" })).toBeTruthy()
+    expect(screen.getByRole("spinbutton", { name: "Semantic search threshold" })).toHaveValue(0.3)
+    expect(screen.getByRole("table", { name: "Semantic search results table" })).toBeTruthy()
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Semantic search threshold" }), {
+      target: { value: "0.6" },
+    })
+
+    await waitFor(() => {
+      expect(
+        useWorkspaceStore
+          .getState()
+          .workspaces.find((workspace) => workspace.id === "market-research")
+          ?.semanticSearchThreshold
+      ).toBe(0.6)
+    })
+
+    fireEvent.click(screen.getByRole("button", { name: "Close semantic search" }))
+
+    expect(screen.queryByRole("dialog", { name: "Semantic search" })).toBeNull()
+  })
+
+  it("ranks embedded child chunks with semantic search", async () => {
+    const results = await semanticSearchWorkspace("market-research", "retention", {
+      generateEmbeddings: async () => [
+        {
+          dimensions: 3,
+          embedding: [1, 0, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getChunks: async () => [
+        {
+          id: "chunk-low",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          chunkId: "chunk-low",
+          level: "child",
+          text: "Expansion planning context.",
+          pageNumbers: [2],
+          embedding: [0, 1, 0],
+          embeddingDimensions: 3,
+          embeddingModel: "test-embedding-model",
+          order: 2,
+          createdAt: 2,
+        },
+        {
+          id: "chunk-high",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          chunkId: "chunk-high",
+          parentChunkId: "parent-1",
+          level: "child",
+          text: "Retention signals and customer health context.",
+          pageNumbers: [1],
+          embedding: [0.98, 0.02, 0],
+          embeddingDimensions: 3,
+          embeddingModel: "test-embedding-model",
+          order: 1,
+          createdAt: 1,
+        },
+      ],
+      getDocuments: async () => [
+        {
+          id: "doc-1",
+          workspaceId: "market-research",
+          name: "Signals.pdf",
+          type: "pdf",
+          tone: "blue",
+          mimeType: "application/pdf",
+          blob: new Blob(["signals"]),
+          content: new ArrayBuffer(1),
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({
+      chunk: {
+        chunkId: "chunk-high",
+        text: "Retention signals and customer health context.",
+      },
+      document: {
+        name: "Signals.pdf",
+      },
+    })
+    expect(results[0].similarity).toBeGreaterThan(0.45)
+    expect(results[0].score).toBeGreaterThan(0)
   })
 
   it("opens workspace management and deletes all workspace files", async () => {

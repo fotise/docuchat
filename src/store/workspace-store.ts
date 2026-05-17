@@ -53,6 +53,10 @@ interface WorkspaceStoreState {
   createWorkspace: () => Promise<WorkspaceRouteConfig>
   renameWorkspace: (workspaceId: string, title: string) => Promise<void>
   updateWorkspaceIcon: (workspaceId: string, icon: IconKey) => Promise<void>
+  updateWorkspaceSemanticSearchThreshold: (
+    workspaceId: string,
+    threshold: number
+  ) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
   processNextWorkspaceDocument: (
     workerFactory?: FileProcessingWorkerFactory
@@ -288,6 +292,32 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     const updatedWorkspace = {
       ...workspace,
       navIcon: icon,
+    }
+
+    await saveWorkspace(updatedWorkspace)
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+  },
+
+  updateWorkspaceSemanticSearchThreshold: async (workspaceId, threshold) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const normalizedThreshold = Math.min(0.95, Math.max(0, threshold))
+
+    if (workspace.semanticSearchThreshold === normalizedThreshold) {
+      return
+    }
+
+    const updatedWorkspace = {
+      ...workspace,
+      semanticSearchThreshold: normalizedThreshold,
     }
 
     await saveWorkspace(updatedWorkspace)

@@ -106,6 +106,7 @@ export interface WorkspaceRouteConfig {
   documentCount: number
   documentLabel: string
   isFavorite: boolean
+  semanticSearchThreshold?: number
   tabs: WorkspaceTab[]
   views: WorkspaceView[]
   uploadedDocuments: UploadedDocument[]
