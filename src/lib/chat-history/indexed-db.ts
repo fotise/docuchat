@@ -356,6 +356,23 @@ export async function deleteWorkspaceDocument(documentId: string) {
   await tx.done
 }
 
+export async function deleteWorkspaceDocuments(workspaceId: string) {
+  const db = await getDb()
+  const tx = db.transaction([DOCUMENT_STORE, DOCUMENT_CHUNK_STORE], "readwrite")
+  const documentWorkspaceIndex = tx.objectStore(DOCUMENT_STORE).index("workspaceId")
+  const chunkWorkspaceIndex = tx.objectStore(DOCUMENT_CHUNK_STORE).index("workspaceId")
+
+  for await (const cursor of documentWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  for await (const cursor of chunkWorkspaceIndex.iterate(workspaceId)) {
+    await cursor.delete()
+  }
+
+  await tx.done
+}
+
 export async function deleteWorkspace(workspaceId: string) {
   const db = await getDb()
   await db.delete(WORKSPACE_STORE, workspaceId)

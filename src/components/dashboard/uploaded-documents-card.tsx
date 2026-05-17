@@ -3,12 +3,14 @@ import {
   ChevronLeft,
   ChevronRight,
   RotateCcw,
+  Search,
   Settings,
   Trash2,
   Upload,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   getDocumentChunks,
@@ -28,6 +30,7 @@ interface UploadedDocumentsCardProps {
   deleteLabel?: string
   onUploadFiles?: (files: File[]) => Promise<void> | void
   onDeleteDocument?: (documentId: string) => Promise<void> | void
+  onDeleteAllDocuments?: () => Promise<void> | void
   onReprocessDocument?: (documentId: string) => Promise<void> | void
   onDeleteWorkspace?: () => void
 }
@@ -40,6 +43,7 @@ export function UploadedDocumentsCard({
   deleteLabel = "Delete Workspace",
   onUploadFiles,
   onDeleteDocument,
+  onDeleteAllDocuments,
   onReprocessDocument,
   onDeleteWorkspace,
 }: UploadedDocumentsCardProps) {
@@ -47,10 +51,13 @@ export function UploadedDocumentsCard({
   const [statusMessage, setStatusMessage] = useState("")
   const [activeChunkTab, setActiveChunkTab] = useState("parents")
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
+  const [isManagingWorkspace, setIsManagingWorkspace] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [childChunkPage, setChildChunkPage] = useState(1)
   const [documentChunks, setDocumentChunks] = useState<StoredDocumentChunk[]>([])
   const [isLoadingChunks, setIsLoadingChunks] = useState(false)
+  const [managementSearchQuery, setManagementSearchQuery] = useState("")
+  const [managementTypeFilter, setManagementTypeFilter] = useState("all")
   const [parentChunkPage, setParentChunkPage] = useState(1)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const selectedDocument = documents.find(
@@ -97,6 +104,38 @@ export function UploadedDocumentsCard({
     ),
     [childChunkPage, childChunks]
   )
+  const fileTypeOptions = useMemo(
+    () => Array.from(
+      new Set(documents.map((document) => document.type.toLowerCase()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b)),
+    [documents]
+  )
+  const filteredManagementDocuments = useMemo(() => {
+    const normalizedQuery = managementSearchQuery.trim().toLowerCase()
+
+    return documents.filter((document) => {
+      const matchesSearch = normalizedQuery.length === 0 ||
+        document.name.toLowerCase().includes(normalizedQuery)
+      const matchesType = managementTypeFilter === "all" ||
+        document.type.toLowerCase() === managementTypeFilter
+
+      return matchesSearch && matchesType
+    })
+  }, [documents, managementSearchQuery, managementTypeFilter])
+  const workspaceTotalSize = useMemo(
+    () => documents.reduce((total, document) => total + (document.size ?? 0), 0),
+    [documents]
+  )
+  const workspaceTotalChunks = useMemo(
+    () => documents.reduce((total, document) => total + (document.chunkCount ?? 0), 0),
+    [documents]
+  )
+  const workspacePendingFiles = useMemo(
+    () => documents.filter(
+      (document) => document.toBeProcessed || document.processingStatus === "toBeProcessed"
+    ).length,
+    [documents]
+  )
 
   useEffect(() => {
     if (!selectedDocument) {
@@ -142,6 +181,7 @@ export function UploadedDocumentsCard({
 
   function handleOpenDocument(documentId: string) {
     setActiveChunkTab("parents")
+    setIsManagingWorkspace(false)
     setSelectedDocumentId(documentId)
     setChildChunkPage(1)
     setDocumentChunks([])
@@ -184,7 +224,10 @@ export function UploadedDocumentsCard({
 
   function handleManageClick() {
     setIsConfirmingDelete(false)
-    setStatusMessage("Workspace document management is not connected yet.")
+    setManagementSearchQuery("")
+    setManagementTypeFilter("all")
+    setSelectedDocumentId(null)
+    setIsManagingWorkspace(true)
   }
 
   function handleDeleteClick() {
@@ -199,7 +242,17 @@ export function UploadedDocumentsCard({
 
   function handleConfirmDelete() {
     setIsConfirmingDelete(false)
+    setIsManagingWorkspace(false)
     onDeleteWorkspace?.()
+  }
+
+  async function handleDeleteAllDocuments() {
+    if (!onDeleteAllDocuments) {
+      return
+    }
+
+    await onDeleteAllDocuments()
+    setStatusMessage("Deleted all files from this workspace.")
   }
 
   async function handleDeleteDocument() {
@@ -383,6 +436,163 @@ export function UploadedDocumentsCard({
         </p>
       </CardContent>
 
+      {isManagingWorkspace ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Workspace management"
+        >
+          <div className="flex h-[80vh] max-h-[80vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
+            <div className="border-b border-white/10 p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">
+                Workspace management
+              </p>
+              <h2 className="mt-2 text-lg font-extrabold leading-tight">
+                Files in this workspace
+              </h2>
+              <p className="mt-1 text-sm text-slate-300">
+                {documents.length === 1
+                  ? "1 file available"
+                  : `${documents.length.toLocaleString()} files available`}
+              </p>
+            </div>
+
+            <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto p-5">
+              <dl className="mb-4 grid grid-cols-4 gap-2 text-xs" aria-label="Workspace summary">
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                    Files
+                  </dt>
+                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                    {formatCount(documents.length)}
+                  </dd>
+                </div>
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                    Total size
+                  </dt>
+                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                    {formatFileSize(workspaceTotalSize)}
+                  </dd>
+                </div>
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                    Chunks
+                  </dt>
+                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                    {formatCount(workspaceTotalChunks)}
+                  </dd>
+                </div>
+                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                    Pending
+                  </dt>
+                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                    {formatCount(workspacePendingFiles)}
+                  </dd>
+                </div>
+              </dl>
+
+              <div className="mb-4 grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                <label className="relative block">
+                  <span className="sr-only">Search workspace files</span>
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-sky-200/60" />
+                  <Input
+                    type="search"
+                    aria-label="Search workspace files"
+                    placeholder="Search files..."
+                    value={managementSearchQuery}
+                    onChange={(event) => setManagementSearchQuery(event.target.value)}
+                    className="h-10 rounded-xl border-white/10 bg-slate-950/30 pl-9 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                  />
+                </label>
+                <label className="block">
+                  <span className="sr-only">Filter files by type</span>
+                  <select
+                    aria-label="Filter files by type"
+                    value={managementTypeFilter}
+                    onChange={(event) => setManagementTypeFilter(event.target.value)}
+                    className="h-10 w-full rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm font-semibold text-slate-100 outline-none transition focus:border-sky-300/60 focus:ring-2 focus:ring-sky-300/20"
+                  >
+                    <option value="all">All file types</option>
+                    {fileTypeOptions.map((type) => (
+                      <option key={type} value={type}>
+                        {type.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {documents.length > 0 && filteredManagementDocuments.length > 0 ? (
+                <div
+                  className="app-scrollbar grid max-h-[372px] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3 lg:grid-cols-6"
+                  role="list"
+                  aria-label="Workspace management files"
+                >
+                  {filteredManagementDocuments.map((doc) => (
+                    <DocumentMiniCard
+                      key={doc.id}
+                      childChunkCount={doc.childChunkCount}
+                      chunkCount={doc.chunkCount}
+                      name={doc.name}
+                      parentChunkCount={doc.parentChunkCount}
+                      tone={doc.tone}
+                      size={doc.size}
+                      toBeProcessed={doc.toBeProcessed}
+                      processingStatus={doc.processingStatus}
+                      onClick={() => handleOpenDocument(doc.id)}
+                    />
+                  ))}
+                </div>
+              ) : documents.length > 0 ? (
+                <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
+                  No files match the current filters.
+                </div>
+              ) : (
+                <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
+                  No files in this workspace.
+                </div>
+              )}
+            </div>
+
+            <div className="sticky bottom-0 z-10 mt-auto grid shrink-0 grid-cols-1 gap-3 border-t border-white/10 bg-[#111b4b]/95 p-4 backdrop-blur sm:grid-cols-3">
+              <Button
+                type="button"
+                variant="secondary"
+                aria-label="Close workspace management"
+                onClick={() => setIsManagingWorkspace(false)}
+                className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15"
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                aria-label="Delete workspace from management"
+                onClick={handleConfirmDelete}
+                className="rounded-xl border border-rose-300/25 bg-rose-500/20 text-rose-50 hover:bg-rose-500/30"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete Workspace
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                aria-label="Delete all files"
+                disabled={documents.length === 0 || !onDeleteAllDocuments}
+                onClick={() => void handleDeleteAllDocuments()}
+                className="rounded-xl border border-amber-300/25 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25 disabled:opacity-50"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete all files
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {selectedDocument ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
@@ -390,7 +600,7 @@ export function UploadedDocumentsCard({
           aria-modal="true"
           aria-label={`File details for ${selectedDocument.name}`}
         >
-          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
+          <div className="flex h-[80vh] max-h-[80vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
             <div className="app-scrollbar overflow-y-auto p-5">
               <div className="flex items-start gap-4">
                 <FilePreviewIcon tone={getDisplayTone(selectedDocument)} size="large" />
@@ -676,7 +886,7 @@ export function UploadedDocumentsCard({
               </section>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 border-t border-white/10 bg-white/5 p-4 sm:grid-cols-3">
+            <div className="sticky bottom-0 z-10 mt-auto grid shrink-0 grid-cols-1 gap-3 border-t border-white/10 bg-[#111b4b]/95 p-4 backdrop-blur sm:grid-cols-3">
               <Button
                 type="button"
                 variant="secondary"

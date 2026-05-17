@@ -2,6 +2,7 @@ import { create } from "zustand"
 import {
   addWorkspaceDocuments,
   deleteDocumentChunks,
+  deleteWorkspaceDocuments as deleteStoredWorkspaceDocuments,
   deleteWorkspaceDocument as deleteStoredWorkspaceDocument,
   deleteWorkspace as deleteStoredWorkspace,
   getWorkspaceDocument,
@@ -57,6 +58,7 @@ interface WorkspaceStoreState {
     workerFactory?: FileProcessingWorkerFactory
   ) => Promise<boolean>
   reprocessWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
+  deleteAllWorkspaceDocuments: (workspaceId: string) => Promise<void>
   deleteWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
 }
@@ -574,6 +576,34 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       })
     }
 
+    await saveWorkspace(updatedWorkspace)
+
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+  },
+
+  deleteAllWorkspaceDocuments: async (workspaceId) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const emptyHighlightedFile = getEmptyHighlightedFile()
+    const updatedWorkspace = {
+      ...workspace,
+      documentCount: 0,
+      uploadedDocuments: [],
+      views: workspace.views.map((view) => ({
+        ...view,
+        highlightedFile: emptyHighlightedFile,
+      })),
+    }
+
+    await deleteStoredWorkspaceDocuments(workspaceId)
     await saveWorkspace(updatedWorkspace)
 
     set((state) => ({

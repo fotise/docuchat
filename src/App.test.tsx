@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import { LlmProvider } from "@/components/llm/llm-provider"
 import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
@@ -89,12 +89,83 @@ describe("App", () => {
     expect(await screen.findAllByText("Market Research")).not.toHaveLength(0)
   })
 
-  it("announces placeholder upload controls", async () => {
+  it("opens workspace management and deletes all workspace files", async () => {
     renderApp()
 
     fireEvent.click(await screen.findByRole("button", { name: "Manage Workspace" }))
 
-    expect(screen.getByText("Workspace document management is not connected yet.")).toBeTruthy()
+    expect(await screen.findByRole("dialog", { name: "Workspace management" })).toBeTruthy()
+    expect(screen.getByText("Files in this workspace")).toBeTruthy()
+
+    const managementFiles = screen.getByRole("list", {
+      name: "Workspace management files",
+    })
+    const workspaceSummary = screen.getByLabelText("Workspace summary")
+
+    expect(within(workspaceSummary).getByText("Files")).toBeTruthy()
+    expect(within(workspaceSummary).getByText("Total size")).toBeTruthy()
+    expect(within(workspaceSummary).getByText("Chunks")).toBeTruthy()
+    expect(within(workspaceSummary).getByText("Pending")).toBeTruthy()
+
+    expect(managementFiles).toHaveClass(
+      "grid-cols-2",
+      "sm:grid-cols-3",
+      "lg:grid-cols-6",
+      "max-h-[372px]",
+      "overflow-y-auto"
+    )
+    expect(
+      within(managementFiles).getByRole("button", {
+        name: "Open details for Market_Overview.pdf",
+      })
+    ).toBeTruthy()
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search workspace files" }), {
+      target: { value: "sales" },
+    })
+
+    expect(
+      within(managementFiles).getByRole("button", {
+        name: "Open details for Sales_Report.docx",
+      })
+    ).toBeTruthy()
+    expect(
+      within(managementFiles).queryByRole("button", {
+        name: "Open details for Market_Overview.pdf",
+      })
+    ).toBeNull()
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search workspace files" }), {
+      target: { value: "" },
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Filter files by type" }), {
+      target: { value: "pdf" },
+    })
+
+    expect(
+      within(managementFiles).getByRole("button", {
+        name: "Open details for Market_Overview.pdf",
+      })
+    ).toBeTruthy()
+    expect(
+      within(managementFiles).queryByRole("button", {
+        name: "Open details for Sales_Report.docx",
+      })
+    ).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete all files" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("list", { name: "Workspace management files" })).toBeNull()
+    })
+
+    expect(screen.getByText("No files in this workspace.")).toBeTruthy()
+    expect(screen.getByText("Deleted all files from this workspace.")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Open details for Market_Overview.pdf" })).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Close workspace management" }))
+
+    expect(screen.queryByRole("dialog", { name: "Workspace management" })).toBeNull()
   })
 
   it("renders fixed file cards with ellipsis, tooltip details, and a scrollable list", async () => {

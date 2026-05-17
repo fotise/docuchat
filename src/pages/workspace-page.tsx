@@ -13,6 +13,7 @@ export function WorkspacePage() {
   const { workspaceId } = useParams()
   const navigate = useNavigate()
   const workspaces = useWorkspaceStore((state) => state.workspaces)
+  const deleteAllWorkspaceDocuments = useWorkspaceStore((state) => state.deleteAllWorkspaceDocuments)
   const deleteWorkspace = useWorkspaceStore((state) => state.deleteWorkspace)
   const deleteWorkspaceDocument = useWorkspaceStore((state) => state.deleteWorkspaceDocument)
   const reprocessWorkspaceDocument = useWorkspaceStore((state) => state.reprocessWorkspaceDocument)
@@ -85,6 +86,14 @@ export function WorkspacePage() {
     await deleteWorkspaceDocument(workspace.id, documentId)
   }
 
+  async function handleDeleteAllDocuments() {
+    if (!workspace) {
+      return
+    }
+
+    await deleteAllWorkspaceDocuments(workspace.id)
+  }
+
   async function handleReprocessDocument(documentId: string) {
     if (!workspace) {
       return
@@ -104,6 +113,7 @@ export function WorkspacePage() {
             manageLabel={labels.manageButton}
             documents={workspace.uploadedDocuments}
             onUploadFiles={(files) => void handleUploadFiles(files)}
+            onDeleteAllDocuments={() => void handleDeleteAllDocuments()}
             onDeleteDocument={(documentId) => void handleDeleteDocument(documentId)}
             onReprocessDocument={(documentId) => void handleReprocessDocument(documentId)}
             onDeleteWorkspace={() => void handleDeleteWorkspace()}
