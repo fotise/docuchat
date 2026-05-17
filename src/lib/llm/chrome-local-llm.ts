@@ -138,7 +138,9 @@ function buildRetrievedContext({ retrievedChunks }: GenerateReplyInput) {
       `Similarity: ${chunk.similarity.toFixed(3)}`,
       chunk.matchedQueries?.length ? `Matched queries: ${chunk.matchedQueries.join(" | ")}` : undefined,
       `Matched child chunks: ${chunk.matchedChildChunkIds.join(", ")}`,
-      `Text:\n${chunk.text}`,
+      chunk.keywordScore !== undefined ? `Keyword score: ${chunk.keywordScore.toFixed(3)}` : undefined,
+      chunk.sourceScore !== undefined && chunk.sourceScore > 0 ? `Source match score: ${chunk.sourceScore.toFixed(3)}` : undefined,
+      `Relevant excerpt:\n${chunk.excerpt ?? chunk.text}`,
     ].filter(Boolean).join("\n")
   })
 
@@ -158,7 +160,10 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
     "Maintain conversational continuity: resolve pronouns and references from the conversation, answer follow-up questions directly, and do not restart the conversation unless asked.",
     "Use the workspace files list to understand what evidence may be available.",
     "When retrieved parent chunks are provided, use them as the primary evidence for document-content questions. Cite file names and pages when available.",
+    "Every factual claim about document contents must be supported by retrieved evidence. Use citations like [File.pdf, p. 3] when pages are available.",
+    "Never treat the file list as evidence of file contents. The file list only proves inventory, names, types, sizes, and processing status.",
     "If retrieved chunks are weak, partial, or unrelated, say so briefly and answer only from reliable context or ask a focused follow-up question.",
+    "If no retrieved evidence supports a document-content question, say that you could not find supporting evidence in the indexed documents.",
     "For file inventory questions, such as how many files exist, file names, types, sizes, or processing status, answer directly from the workspace files list without asking for document contents.",
     "Prefer processed files. If a file is still processing or waiting to be processed, say that its contents may not be available yet.",
     "If the answer cannot be supported by the available workspace context, say what is missing instead of inventing details.",
@@ -179,6 +184,8 @@ function buildPrompt(input: GenerateReplyInput) {
     "System context:",
     buildSystemPrompt(input),
     input.retrievalIntent ? `Detected user intent:\n${input.retrievalIntent}` : "Detected user intent: not provided",
+    input.retrievalMode ? `Retrieval mode:\n${input.retrievalMode}` : "Retrieval mode: not provided",
+    input.retrievalConfidence ? `Retrieval confidence:\n${input.retrievalConfidence}` : "Retrieval confidence: not provided",
     input.retrievalQuery ? `Semantic retrieval query used for evidence:\n${input.retrievalQuery}` : "Semantic retrieval query used for evidence: none",
     input.retrievalRationale ? `Retrieval rationale:\n${input.retrievalRationale}` : "Retrieval rationale: not provided",
     buildRetrievedContext(input),
@@ -201,8 +208,12 @@ function buildRetrievalQueryPrompt({ prompt, messages, workspaceTitle, tabLabel 
     conversation ? `Conversation:\n${conversation}` : "Conversation: none",
     `Latest user question:\n${prompt}`,
     "Return only strict JSON with these fields:",
-    `{"intent":"short intent","needsDocumentSearch":true,"searchQuery":"standalone retrieval query using the user's terminology and resolved references","rationale":"short rationale"}`,
+    `{"intent":"short intent","retrievalMode":"semantic","needsDocumentSearch":true,"searchQuery":"primary standalone retrieval query","searchQueries":["primary standalone retrieval query","alternate query with synonyms or resolved references"],"targetDocumentNames":["optional exact file names mentioned by the user"],"resolvedReferences":["short resolved follow-up references"],"rationale":"short rationale"}`,
     "The searchQuery must be standalone: rewrite vague follow-ups like 'and that one?' using the relevant entities from the conversation.",
+    "Use retrievalMode one of: none, inventory, semantic, targeted_file, summary.",
+    "Use targeted_file when the user names or clearly refers to a specific file. Put exact file names in targetDocumentNames.",
+    "Use summary for broad summarization requests; include broader searchQueries that cover the named file or workspace topic.",
+    "Use inventory and needsDocumentSearch=false for file count/name/type/status questions.",
     "Keep important names, dates, products, clauses, metrics, and document terms from the user's wording.",
     "Set needsDocumentSearch to false only for greetings, UI-only actions, or questions that can be answered from the file inventory without document contents.",
   ].join("\n\n")
@@ -222,13 +233,26 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
 
   try {
     const parsed = JSON.parse(jsonMatch[0]) as Partial<GenerateRetrievalQueryResult>
+    const searchQueries = Array.isArray(parsed.searchQueries)
+      ? parsed.searchQueries.filter((query): query is string => typeof query === "string")
+      : undefined
+    const targetDocumentNames = Array.isArray(parsed.targetDocumentNames)
+      ? parsed.targetDocumentNames.filter((name): name is string => typeof name === "string")
+      : undefined
+    const resolvedReferences = Array.isArray(parsed.resolvedReferences)
+      ? parsed.resolvedReferences.filter((reference): reference is string => typeof reference === "string")
+      : undefined
 
     return {
       intent: typeof parsed.intent === "string" ? parsed.intent : "Answer the latest user question.",
+      retrievalMode: parsed.retrievalMode,
       needsDocumentSearch: typeof parsed.needsDocumentSearch === "boolean" ? parsed.needsDocumentSearch : true,
       searchQuery: typeof parsed.searchQuery === "string" && parsed.searchQuery.trim().length > 0
         ? parsed.searchQuery
         : fallbackPrompt,
+      searchQueries,
+      targetDocumentNames,
+      resolvedReferences,
       rationale: typeof parsed.rationale === "string" ? parsed.rationale : undefined,
     }
   } catch {

@@ -14,15 +14,19 @@ export function createDefaultLlmClient(): LlmClient {
       if (await chromeLocalLlm.isAvailable()) {
         return chromeLocalLlm.generateRetrievalQuery?.(input) ?? {
           intent: "Answer the latest user question.",
+          retrievalMode: "semantic",
           needsDocumentSearch: true,
           searchQuery: input.prompt,
+          searchQueries: [input.prompt],
         }
       }
 
       return {
         intent: "Answer the latest user question.",
+        retrievalMode: "semantic",
         needsDocumentSearch: true,
         searchQuery: input.prompt,
+        searchQueries: [input.prompt],
       }
     },
     generateReply: async (input) => {

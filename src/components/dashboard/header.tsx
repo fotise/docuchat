@@ -3,11 +3,11 @@ import { ChevronDown, Heart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { dashboardConfig } from "@/config/dashboard"
-import {
-  DEFAULT_MIN_SEMANTIC_SIMILARITY,
-  semanticSearchWorkspace,
-  type SemanticSearchResult,
-} from "@/lib/file-processing/semantic-search"
+import { generateRagRetrievalContext, type RagRetrievalContext } from "@/lib/chat/rag-chat"
+import { DEFAULT_MIN_SEMANTIC_SIMILARITY } from "@/lib/file-processing/semantic-search"
+import { useLlmClient } from "@/lib/llm/context"
+import type { RetrievedContextChunk } from "@/lib/llm/types"
+import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import { AppIcon } from "./icon"
@@ -36,17 +36,35 @@ export function Header({ workspace }: HeaderProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [searchResults, setSearchResults] = useState<SemanticSearchResult[]>([])
+  const [searchResults, setSearchResults] = useState<RetrievedContextChunk[]>([])
+  const [ragDebugContext, setRagDebugContext] = useState<RagRetrievalContext | null>(null)
+  const [additionalQueries, setAdditionalQueries] = useState("")
+  const [targetDocumentNames, setTargetDocumentNames] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
+  const llmClient = useLlmClient()
+  const activeTab = useDashboardStore(
+    (state) => state.activeTabByWorkspace[workspace.id] ?? workspace.tabs[0]?.id ?? ""
+  )
+  const storedMessages = useDashboardStore(
+    (state) => state.messagesByWorkspaceTab[workspace.id]?.[activeTab]
+  )
   const renameWorkspace = useWorkspaceStore((state) => state.renameWorkspace)
   const updateWorkspaceIcon = useWorkspaceStore((state) => state.updateWorkspaceIcon)
   const updateWorkspaceSemanticSearchThreshold = useWorkspaceStore(
     (state) => state.updateWorkspaceSemanticSearchThreshold
   )
+  const updateWorkspaceRagSearchSettings = useWorkspaceStore(
+    (state) => state.updateWorkspaceRagSearchSettings
+  )
   const { header } = dashboardConfig
+  const currentView = workspace.views.find((view) => view.tabId === activeTab) ?? workspace.views[0]
+  const activeTabLabel = workspace.tabs.find((tab) => tab.id === activeTab)?.label ?? workspace.tabs[0]?.label ?? ""
+  const currentMessages = storedMessages ?? currentView?.initialMessages ?? []
   const semanticSearchThreshold = workspace.semanticSearchThreshold ?? DEFAULT_MIN_SEMANTIC_SIMILARITY
+  const childMatchLimit = workspace.ragSearchChildMatchLimit ?? 40
+  const parentChunkLimit = workspace.ragSearchParentChunkLimit ?? 10
 
   function handleExploreClick() {
     setStatusMessage("Workspace explorer controls are not connected yet.")
@@ -68,22 +86,39 @@ export function Header({ workspace }: HeaderProps) {
     return text.length > 120 ? `${text.slice(0, 120)}…` : text
   }
 
-  async function handleSemanticSearch(event: FormEvent<HTMLFormElement>) {
+  function parseList(value: string) {
+    return value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+
+  async function handleRagDebugSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     if (!searchQuery.trim()) {
       setSearchResults([])
+      setRagDebugContext(null)
       return
     }
 
     setIsSearching(true)
 
     try {
-      setSearchResults(
-        await semanticSearchWorkspace(workspace.id, searchQuery, {
-          minSimilarity: semanticSearchThreshold,
-        })
-      )
+      const context = await generateRagRetrievalContext({
+        workspace,
+        tabLabel: activeTabLabel,
+        prompt: searchQuery,
+        messages: currentMessages,
+        llmClient,
+        additionalQueries: parseList(additionalQueries),
+        childMatchLimit,
+        parentChunkLimit,
+        targetDocumentNames: parseList(targetDocumentNames),
+      })
+
+      setRagDebugContext(context)
+      setSearchResults(context.retrievedChunks)
     } finally {
       setIsSearching(false)
     }
@@ -97,6 +132,32 @@ export function Header({ workspace }: HeaderProps) {
     }
 
     void updateWorkspaceSemanticSearchThreshold(workspace.id, parsedValue)
+  }
+
+  function handleChildLimitChange(value: string) {
+    const parsedValue = Number.parseInt(value, 10)
+
+    if (!Number.isFinite(parsedValue)) {
+      return
+    }
+
+    void updateWorkspaceRagSearchSettings(workspace.id, {
+      ragSearchChildMatchLimit: parsedValue,
+      ragSearchParentChunkLimit: parentChunkLimit,
+    })
+  }
+
+  function handleParentLimitChange(value: string) {
+    const parsedValue = Number.parseInt(value, 10)
+
+    if (!Number.isFinite(parsedValue)) {
+      return
+    }
+
+    void updateWorkspaceRagSearchSettings(workspace.id, {
+      ragSearchChildMatchLimit: childMatchLimit,
+      ragSearchParentChunkLimit: parsedValue,
+    })
   }
 
   async function commitRename() {
@@ -218,125 +279,210 @@ export function Header({ workspace }: HeaderProps) {
           aria-modal="true"
           aria-label="Semantic search"
         >
-          <div className="flex h-[80vh] max-h-[80vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
+          <div className="flex h-[80vh] max-h-[80vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
             <div className="border-b border-white/10 p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">
-                Semantic search
+                RAG search debugger
               </p>
               <h2 className="mt-2 text-lg font-extrabold leading-tight">
-                Search across {workspace.title}
+                Simulate chat retrieval across {workspace.title}
               </h2>
               <form
-                className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_190px_140px]"
-                onSubmit={(event) => void handleSemanticSearch(event)}
+                className="mt-4 grid gap-3"
+                onSubmit={(event) => void handleRagDebugSearch(event)}
               >
-                <Input
-                  type="search"
-                  aria-label="Semantic search query"
-                  placeholder="Ask for concepts, topics, or facts in your files..."
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
-                />
-                <label className="block">
-                  <span className="sr-only">
-                    Semantic search threshold
-                  </span>
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px]">
                   <Input
-                    type="number"
-                    aria-label="Semantic search threshold"
-                    min={0}
-                    max={0.95}
-                    step={0.05}
-                    value={semanticSearchThreshold}
-                    onChange={(event) => handleThresholdChange(event.target.value)}
-                    className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    type="search"
+                    aria-label="Semantic search query"
+                    placeholder="Ask the same question you would ask in chat..."
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                   />
-                </label>
-                <Button
-                  type="submit"
-                  disabled={isSearching || !searchQuery.trim()}
-                  className="h-10 rounded-xl bg-gradient-to-b from-blue-400 to-blue-700 text-white hover:from-blue-400 hover:to-blue-600 disabled:opacity-50"
-                >
-                  {isSearching ? "Searching..." : "Search"}
-                </Button>
+                  <Button
+                    type="submit"
+                    disabled={isSearching || !searchQuery.trim()}
+                    className="h-10 rounded-xl bg-gradient-to-b from-blue-400 to-blue-700 text-white hover:from-blue-400 hover:to-blue-600 disabled:opacity-50"
+                  >
+                    {isSearching ? "Simulating..." : "Simulate RAG"}
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-5">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Similarity threshold
+                    </span>
+                    <Input
+                      type="number"
+                      aria-label="Semantic search threshold"
+                      min={0}
+                      max={0.95}
+                      step={0.05}
+                      value={semanticSearchThreshold}
+                      onChange={(event) => handleThresholdChange(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Child matches
+                    </span>
+                    <Input
+                      type="number"
+                      aria-label="RAG child match limit"
+                      min={5}
+                      max={100}
+                      step={5}
+                      value={childMatchLimit}
+                      onChange={(event) => handleChildLimitChange(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Parent chunks
+                    </span>
+                    <Input
+                      type="number"
+                      aria-label="RAG parent chunk limit"
+                      min={1}
+                      max={20}
+                      step={1}
+                      value={parentChunkLimit}
+                      onChange={(event) => handleParentLimitChange(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Target files
+                    </span>
+                    <Input
+                      aria-label="RAG target document names"
+                      placeholder="file.pdf, notes.docx"
+                      value={targetDocumentNames}
+                      onChange={(event) => setTargetDocumentNames(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Extra queries
+                    </span>
+                    <Input
+                      aria-label="RAG additional queries"
+                      placeholder="query 1, query 2"
+                      value={additionalQueries}
+                      onChange={(event) => setAdditionalQueries(event.target.value)}
+                      className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                    />
+                  </label>
+                </div>
               </form>
+              {ragDebugContext ? (
+                <div className="mt-4 grid gap-2 rounded-2xl border border-sky-300/15 bg-slate-950/20 p-3 text-xs text-slate-200 md:grid-cols-4">
+                  <div>
+                    <span className="block text-sky-200/70">Mode</span>
+                    <strong>{ragDebugContext.retrievalMode}</strong>
+                  </div>
+                  <div>
+                    <span className="block text-sky-200/70">Confidence</span>
+                    <strong>{ragDebugContext.retrievalConfidence}</strong>
+                  </div>
+                  <div>
+                    <span className="block text-sky-200/70">Queries</span>
+                    <strong>{ragDebugContext.searchQueries.length}</strong>
+                  </div>
+                  <div>
+                    <span className="block text-sky-200/70">Targets</span>
+                    <strong>{ragDebugContext.targetDocumentNames.join(", ") || "All files"}</strong>
+                  </div>
+                  <div className="md:col-span-2">
+                    <span className="block text-sky-200/70">Generated query</span>
+                    <span className="line-clamp-2 break-words">{ragDebugContext.retrievalQuery}</span>
+                  </div>
+                  <div className="md:col-span-2">
+                    <span className="block text-sky-200/70">Intent</span>
+                    <span className="line-clamp-2 break-words">{ragDebugContext.retrievalQueryResult.intent}</span>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="app-scrollbar min-h-0 flex-1 overflow-auto p-5">
               <div className="app-scrollbar overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/20">
                 <table
-                  className="min-w-[1060px] table-fixed text-left text-xs"
+                  className="min-w-[1320px] table-fixed text-left text-xs"
                   aria-label="Semantic search results table"
                 >
                   <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
                     <tr>
                       <th className="w-20 px-3 py-3 font-bold">Score</th>
                       <th className="w-24 px-3 py-3 font-bold">Similarity</th>
+                      <th className="w-24 px-3 py-3 font-bold">Keyword</th>
                       <th className="w-44 px-3 py-3 font-bold">File</th>
                       <th className="w-24 px-3 py-3 font-bold">Pages</th>
-                      <th className="w-56 px-3 py-3 font-bold">Chunk ID</th>
                       <th className="w-56 px-3 py-3 font-bold">Parent ID</th>
-                      <th className="w-80 px-3 py-3 font-bold">Text preview</th>
-                      <th className="w-24 px-3 py-3 font-bold">Dims</th>
-                      <th className="w-48 px-3 py-3 font-bold">Model</th>
+                      <th className="w-72 px-3 py-3 font-bold">Matched queries</th>
+                      <th className="w-72 px-3 py-3 font-bold">Child matches</th>
+                      <th className="w-96 px-3 py-3 font-bold">RAG excerpt</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
                     {isSearching ? (
                       <tr>
                         <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
-                          Running semantic search…
+                          Simulating chat RAG retrieval…
                         </td>
                       </tr>
                     ) : searchResults.length > 0 ? (
-                      searchResults.map(({ chunk, document, score, similarity }) => (
-                        <tr key={chunk.id} className="align-top text-slate-200">
+                      searchResults.map((chunk) => (
+                        <tr key={chunk.parentChunkId} className="align-top text-slate-200">
                           <td className="px-3 py-3 font-semibold text-emerald-100">
-                            {formatScore(score)}
+                            {formatScore(chunk.score)}
                           </td>
                           <td className="px-3 py-3 text-slate-300">
-                            {formatSimilarity(similarity)}
+                            {formatSimilarity(chunk.similarity)}
                           </td>
                           <td className="px-3 py-3 text-slate-300">
-                            <span className="line-clamp-2 break-all" title={document?.name ?? chunk.documentId}>
-                              {document?.name ?? chunk.documentId}
+                            {chunk.keywordScore !== undefined ? formatScore(chunk.keywordScore) : "—"}
+                          </td>
+                          <td className="px-3 py-3 text-slate-300">
+                            <span className="line-clamp-2 break-all" title={chunk.documentName ?? chunk.documentId}>
+                              {chunk.documentName ?? chunk.documentId}
                             </span>
                           </td>
                           <td className="px-3 py-3">
                             {formatPageNumbers(chunk.pageNumbers)}
                           </td>
-                          <td className="px-3 py-3 font-mono text-[11px] text-sky-100/90">
-                            <span className="line-clamp-2 break-all" title={chunk.chunkId}>
-                              {chunk.chunkId}
-                            </span>
-                          </td>
                           <td className="px-3 py-3 font-mono text-[11px] text-slate-400">
-                            <span className="line-clamp-2 break-all" title={chunk.parentChunkId ?? "No parent"}>
-                              {chunk.parentChunkId ?? "—"}
+                            <span className="line-clamp-2 break-all" title={chunk.parentChunkId}>
+                              {chunk.parentChunkId}
                             </span>
                           </td>
-                          <td className="px-3 py-3 text-slate-300" title={chunk.text}>
-                            {formatTextPreview(chunk.text)}
+                          <td className="px-3 py-3 text-slate-300" title={chunk.matchedQueries?.join("\n") ?? ""}>
+                            {chunk.matchedQueries?.join(" | ") ?? "—"}
                           </td>
-                          <td className="px-3 py-3">{chunk.embeddingDimensions ?? "—"}</td>
-                          <td className="px-3 py-3 text-slate-300">
-                            <span className="line-clamp-2 break-all" title={chunk.embeddingModel ?? "No embedding model"}>
-                              {chunk.embeddingModel ?? "—"}
-                            </span>
+                          <td className="px-3 py-3 font-mono text-[11px] text-sky-100/90" title={chunk.matchedChildChunkIds.join("\n")}>
+                            {chunk.matchedChildChunkIds.join(", ")}
+                          </td>
+                          <td className="px-3 py-3 text-slate-300" title={chunk.excerpt ?? chunk.text}>
+                            {formatTextPreview(chunk.excerpt ?? chunk.text)}
                           </td>
                         </tr>
                       ))
                     ) : searchQuery.trim() ? (
                       <tr>
                         <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
-                          No semantic matches found.
+                          No RAG parent chunks found for this plan.
                         </td>
                       </tr>
                     ) : (
                       <tr>
                         <td className="px-3 py-5 text-center text-slate-300" colSpan={9}>
-                          Enter a query to search embedded chunks in this workspace.
+                          Enter a chat question to simulate retrieval, inspect generated queries, and tune RAG parameters.
                         </td>
                       </tr>
                     )}
@@ -348,8 +494,8 @@ export function Header({ workspace }: HeaderProps) {
             <div className="sticky bottom-0 z-10 mt-auto grid shrink-0 grid-cols-1 gap-3 border-t border-white/10 bg-[#111b4b]/95 p-4 backdrop-blur sm:grid-cols-[1fr_160px]">
               <p className="self-center text-xs text-slate-300" role="status">
                 {searchResults.length > 0
-                  ? `${searchResults.length.toLocaleString()} semantic results`
-                  : `Search uses stored child chunk embeddings. Threshold: ${semanticSearchThreshold.toFixed(2)}.`}
+                  ? `${searchResults.length.toLocaleString()} parent chunks · mode ${ragDebugContext?.retrievalMode ?? "—"} · confidence ${ragDebugContext?.retrievalConfidence ?? "—"}`
+                  : `RAG simulation uses query rewriting, hybrid child search, parent chunk retrieval, and threshold ${semanticSearchThreshold.toFixed(2)}.`}
               </p>
               <Button
                 type="button"

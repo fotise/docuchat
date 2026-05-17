@@ -107,6 +107,8 @@ export interface WorkspaceRouteConfig {
   documentLabel: string
   isFavorite: boolean
   semanticSearchThreshold?: number
+  ragSearchChildMatchLimit?: number
+  ragSearchParentChunkLimit?: number
   tabs: WorkspaceTab[]
   views: WorkspaceView[]
   uploadedDocuments: UploadedDocument[]

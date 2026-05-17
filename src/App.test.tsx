@@ -101,21 +101,33 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open semantic search" }))
 
     expect(await screen.findByRole("dialog", { name: "Semantic search" })).toBeTruthy()
+    expect(screen.getByText("RAG search debugger")).toBeTruthy()
     expect(screen.getByRole("searchbox", { name: "Semantic search query" })).toBeTruthy()
     expect(screen.getByRole("spinbutton", { name: "Semantic search threshold" })).toHaveValue(0.3)
+    expect(screen.getByRole("spinbutton", { name: "RAG child match limit" })).toHaveValue(40)
+    expect(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" })).toHaveValue(10)
+    expect(screen.getByRole("textbox", { name: "RAG target document names" })).toBeTruthy()
+    expect(screen.getByRole("textbox", { name: "RAG additional queries" })).toBeTruthy()
     expect(screen.getByRole("table", { name: "Semantic search results table" })).toBeTruthy()
 
     fireEvent.change(screen.getByRole("spinbutton", { name: "Semantic search threshold" }), {
       target: { value: "0.6" },
     })
+    fireEvent.change(screen.getByRole("spinbutton", { name: "RAG child match limit" }), {
+      target: { value: "55" },
+    })
+    fireEvent.change(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" }), {
+      target: { value: "8" },
+    })
 
     await waitFor(() => {
-      expect(
-        useWorkspaceStore
-          .getState()
-          .workspaces.find((workspace) => workspace.id === "market-research")
-          ?.semanticSearchThreshold
-      ).toBe(0.6)
+      const workspace = useWorkspaceStore
+        .getState()
+        .workspaces.find((item) => item.id === "market-research")
+
+      expect(workspace?.semanticSearchThreshold).toBe(0.6)
+      expect(workspace?.ragSearchChildMatchLimit).toBe(55)
+      expect(workspace?.ragSearchParentChunkLimit).toBe(8)
     })
 
     fireEvent.click(screen.getByRole("button", { name: "Close semantic search" }))
@@ -266,6 +278,87 @@ describe("App", () => {
       parentChunkId: "parent-1",
       text: "Parent context about retention and customer health.",
     })
+    expect(results[0].excerpt).toContain("retention")
+  })
+
+  it("uses hybrid keyword matching and targeted documents during semantic search", async () => {
+    const results = await semanticSearchWorkspace("legal-files", "contract renewal 2026", {
+      minSimilarity: 0.9,
+      targetDocumentNames: ["Agreement.pdf"],
+      generateEmbeddings: async () => [
+        {
+          dimensions: 2,
+          embedding: [1, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getChunks: async () => [
+        {
+          id: "target-keyword-child",
+          workspaceId: "legal-files",
+          documentId: "doc-target",
+          chunkId: "target-keyword-child",
+          parentChunkId: "parent-target",
+          level: "child",
+          text: "The contract renewal deadline is in 2026.",
+          pageNumbers: [4],
+          embedding: [0, 1],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "other-keyword-child",
+          workspaceId: "legal-files",
+          documentId: "doc-other",
+          chunkId: "other-keyword-child",
+          parentChunkId: "parent-other",
+          level: "child",
+          text: "The contract renewal deadline is in 2026.",
+          pageNumbers: [2],
+          embedding: [1, 0],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 2,
+          createdAt: 2,
+        },
+      ],
+      getDocuments: async () => [
+        {
+          id: "doc-target",
+          workspaceId: "legal-files",
+          name: "Agreement.pdf",
+          type: "pdf",
+          tone: "blue",
+          mimeType: "application/pdf",
+          blob: new Blob(["agreement"]),
+          content: new ArrayBuffer(1),
+        },
+        {
+          id: "doc-other",
+          workspaceId: "legal-files",
+          name: "Budget.pdf",
+          type: "pdf",
+          tone: "green",
+          mimeType: "application/pdf",
+          blob: new Blob(["budget"]),
+          content: new ArrayBuffer(1),
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({
+      chunk: {
+        chunkId: "target-keyword-child",
+      },
+      document: {
+        name: "Agreement.pdf",
+      },
+      keywordScore: 1,
+      sourceScore: 1,
+    })
   })
 
   it("generates a retrieval query before answering chat with parent chunks", async () => {
@@ -284,8 +377,12 @@ describe("App", () => {
         retrievalQueryInput = input
         return {
           intent: "Explain market retention.",
+          retrievalMode: "targeted_file",
           needsDocumentSearch: true,
           searchQuery: "market retention evidence",
+          searchQueries: ["market retention evidence", "customer cohort retention"],
+          targetDocumentNames: ["Market_Overview.pdf"],
+          rationale: "The user is asking a follow-up about retention in the market overview.",
         }
       },
       generateReply: async (input) => {
@@ -308,9 +405,13 @@ describe("App", () => {
       llmClient,
       retrieveParentChunks: async (_workspaceId, query, options) => {
         retrievedQuery = query
-        expect(options.additionalQueries).toEqual(["What does it say about retention?"])
+        expect(options.additionalQueries).toEqual([
+          "customer cohort retention",
+          "What does it say about retention?",
+        ])
         expect(options.minSimilarity).toBe(0.42)
         expect(options.parentLimit).toBe(10)
+        expect(options.targetDocumentNames).toEqual(["Market_Overview.pdf"])
 
         return [
           {
@@ -322,6 +423,7 @@ describe("App", () => {
             score: 0.91,
             similarity: 0.86,
             text: "Retention improved with healthier customer cohorts.",
+            excerpt: "Retention improved with healthier customer cohorts.",
           },
         ]
       },
@@ -340,7 +442,10 @@ describe("App", () => {
       text: "What does it say about retention?",
     })
     expect(finalReplyInput?.retrievalIntent).toBe("Explain market retention.")
+    expect(finalReplyInput?.retrievalMode).toBe("targeted_file")
+    expect(finalReplyInput?.retrievalConfidence).toBe("high")
     expect(finalReplyInput?.retrievalQuery).toBe("market retention evidence")
+    expect(finalReplyInput?.retrievalRationale).toBe("The user is asking a follow-up about retention in the market overview.")
     expect(finalReplyInput?.retrievedChunks?.[0]).toMatchObject({
       documentName: "Market_Overview.pdf",
       parentChunkId: "parent-1",

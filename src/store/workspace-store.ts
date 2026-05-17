@@ -57,6 +57,10 @@ interface WorkspaceStoreState {
     workspaceId: string,
     threshold: number
   ) => Promise<void>
+  updateWorkspaceRagSearchSettings: (
+    workspaceId: string,
+    settings: Pick<WorkspaceRouteConfig, "ragSearchChildMatchLimit" | "ragSearchParentChunkLimit">
+  ) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
   processNextWorkspaceDocument: (
     workerFactory?: FileProcessingWorkerFactory
@@ -320,12 +324,50 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       semanticSearchThreshold: normalizedThreshold,
     }
 
-    await saveWorkspace(updatedWorkspace)
     set((state) => ({
       workspaces: state.workspaces.map((item) =>
         item.id === workspaceId ? updatedWorkspace : item
       ),
     }))
+    await saveWorkspace(updatedWorkspace)
+  },
+
+  updateWorkspaceRagSearchSettings: async (workspaceId, settings) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const normalizedSettings = {
+      ragSearchChildMatchLimit: Math.min(
+        100,
+        Math.max(5, settings.ragSearchChildMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40)
+      ),
+      ragSearchParentChunkLimit: Math.min(
+        20,
+        Math.max(1, settings.ragSearchParentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10)
+      ),
+    }
+
+    if (
+      workspace.ragSearchChildMatchLimit === normalizedSettings.ragSearchChildMatchLimit
+      && workspace.ragSearchParentChunkLimit === normalizedSettings.ragSearchParentChunkLimit
+    ) {
+      return
+    }
+
+    const updatedWorkspace = {
+      ...workspace,
+      ...normalizedSettings,
+    }
+
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+    await saveWorkspace(updatedWorkspace)
   },
 
   uploadWorkspaceFiles: async (workspaceId, files) => {

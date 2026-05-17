@@ -7,8 +7,10 @@ export interface GenerateReplyInput {
   prompt: string
   messages: WorkspaceMessage[]
   retrievalIntent?: string
+  retrievalMode?: RetrievalMode
   retrievalQuery?: string
   retrievalRationale?: string
+  retrievalConfidence?: RetrievalConfidence
   retrievedChunks?: RetrievedContextChunk[]
   signal?: AbortSignal
 }
@@ -22,10 +24,18 @@ export interface GenerateReplyDocumentInfo {
 
 export type GenerateRetrievalQueryInput = GenerateReplyInput
 
+export type RetrievalMode = "none" | "inventory" | "semantic" | "targeted_file" | "summary"
+
+export type RetrievalConfidence = "high" | "medium" | "low" | "none"
+
 export interface GenerateRetrievalQueryResult {
   intent: string
+  retrievalMode?: RetrievalMode
   needsDocumentSearch: boolean
   searchQuery: string
+  searchQueries?: string[]
+  targetDocumentNames?: string[]
+  resolvedReferences?: string[]
   rationale?: string
 }
 
@@ -39,6 +49,9 @@ export interface RetrievedContextChunk {
   score: number
   similarity: number
   text: string
+  excerpt?: string
+  keywordScore?: number
+  sourceScore?: number
 }
 
 export interface LlmClient {

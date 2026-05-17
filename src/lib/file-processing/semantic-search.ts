@@ -12,6 +12,8 @@ export interface SemanticSearchResult {
   document?: StoredWorkspaceDocument
   similarity: number
   score: number
+  keywordScore: number
+  sourceScore: number
 }
 
 interface SemanticSearchOptions {
@@ -20,6 +22,7 @@ interface SemanticSearchOptions {
   getDocuments?: (workspaceId: string) => Promise<StoredWorkspaceDocument[]>
   limit?: number
   minSimilarity?: number
+  targetDocumentNames?: string[]
 }
 
 interface RetrieveParentChunksOptions extends SemanticSearchOptions {
@@ -28,6 +31,119 @@ interface RetrieveParentChunksOptions extends SemanticSearchOptions {
 }
 
 export const DEFAULT_MIN_SEMANTIC_SIMILARITY = 0.3
+const MAX_PARENT_EXCERPT_LENGTH = 1_800
+const STOP_WORDS = new Set([
+  "a",
+  "about",
+  "and",
+  "are",
+  "che",
+  "con",
+  "cosa",
+  "dei",
+  "del",
+  "della",
+  "di",
+  "does",
+  "for",
+  "gli",
+  "how",
+  "il",
+  "in",
+  "is",
+  "it",
+  "la",
+  "le",
+  "me",
+  "nel",
+  "of",
+  "on",
+  "per",
+  "quali",
+  "qual",
+  "the",
+  "to",
+  "un",
+  "una",
+  "what",
+])
+
+function normalizeSearchText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+}
+
+function tokenize(value: string) {
+  return normalizeSearchText(value)
+    .split(/[^a-z0-9_]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2 && !STOP_WORDS.has(token))
+}
+
+function scoreKeywordMatch(query: string, text: string) {
+  const queryTokens = Array.from(new Set(tokenize(query)))
+
+  if (queryTokens.length === 0) {
+    return 0
+  }
+
+  const normalizedText = normalizeSearchText(text)
+  const matchedTokens = queryTokens.filter((token) => normalizedText.includes(token))
+
+  return matchedTokens.length / queryTokens.length
+}
+
+function matchesTargetDocument(document: StoredWorkspaceDocument | undefined, targets: string[]) {
+  if (!document || targets.length === 0) {
+    return false
+  }
+
+  const normalizedName = normalizeSearchText(document.name)
+  const baseName = normalizedName.replace(/\.[^.]+$/, "")
+
+  return targets.some((target) => {
+    const normalizedTarget = normalizeSearchText(target)
+
+    return normalizedName.includes(normalizedTarget)
+      || normalizedTarget.includes(normalizedName)
+      || baseName.includes(normalizedTarget)
+      || normalizedTarget.includes(baseName)
+  })
+}
+
+function buildParentExcerpt(parentText: string, queries: string[]) {
+  const normalizedQueries = queries.map((query) => query.trim()).filter(Boolean)
+  const keywords = Array.from(new Set(normalizedQueries.flatMap(tokenize)))
+  const sentences = parentText
+    .split(/(?<=[.!?])\s+|\n{2,}/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+
+  if (sentences.length === 0) {
+    return parentText.slice(0, MAX_PARENT_EXCERPT_LENGTH)
+  }
+
+  const scoredSentences = sentences
+    .map((sentence, index) => ({
+      index,
+      sentence,
+      score: scoreKeywordMatch(keywords.join(" "), sentence),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+
+  const excerptSentences = (scoredSentences.length > 0
+    ? scoredSentences.slice(0, 5).sort((left, right) => left.index - right.index)
+    : sentences.slice(0, 5).map((sentence, index) => ({ index, sentence, score: 0 })))
+    .map((item) => item.sentence)
+  const excerpt = excerptSentences.join(" ")
+
+  return excerpt.length > MAX_PARENT_EXCERPT_LENGTH
+    ? `${excerpt.slice(0, MAX_PARENT_EXCERPT_LENGTH)}…`
+    : excerpt
+}
 
 export function cosineSimilarity(left: number[], right: number[]) {
   const dimensions = Math.min(left.length, right.length)
@@ -101,21 +217,42 @@ export async function semanticSearchWorkspace(
   const documentById = new Map(
     documents.map((document) => [document.id, document])
   )
+  const normalizedTargets = (options.targetDocumentNames ?? [])
+    .map((target) => target.trim())
+    .filter(Boolean)
+  const targetDocumentIds = new Set(
+    documents
+      .filter((document) => matchesTargetDocument(document, normalizedTargets))
+      .map((document) => document.id)
+  )
+  const filteredChunks = targetDocumentIds.size > 0
+    ? searchableChunks.filter((chunk) => targetDocumentIds.has(chunk.documentId))
+    : searchableChunks
   const limit = options.limit ?? 20
   const minSimilarity = options.minSimilarity ?? DEFAULT_MIN_SEMANTIC_SIMILARITY
 
-  return searchableChunks
+  return filteredChunks
     .map((chunk) => {
+      const document = documentById.get(chunk.documentId)
       const similarity = cosineSimilarity(queryEmbedding.embedding, chunk.embedding ?? [])
+      const semanticScore = calibrateSemanticScore(similarity, minSimilarity)
+      const keywordScore = scoreKeywordMatch(normalizedQuery, chunk.text)
+      const sourceScore = matchesTargetDocument(document, normalizedTargets) ? 1 : 0
+      const score = Math.min(
+        1,
+        semanticScore * 0.7 + keywordScore * 0.25 + sourceScore * 0.05
+      )
 
       return {
         chunk,
-        document: documentById.get(chunk.documentId),
+        document,
         similarity,
-        score: calibrateSemanticScore(similarity, minSimilarity),
+        score,
+        keywordScore,
+        sourceScore,
       }
     })
-    .filter((result) => result.similarity >= minSimilarity)
+    .filter((result) => result.similarity >= minSimilarity || result.keywordScore >= 0.25)
     .sort((left, right) => right.score - left.score)
     .slice(0, limit)
 }
@@ -181,6 +318,9 @@ export async function retrieveParentChunksForWorkspace(
 
         existingParent.score = Math.max(existingParent.score, result.score)
         existingParent.similarity = Math.max(existingParent.similarity, result.similarity)
+        existingParent.keywordScore = Math.max(existingParent.keywordScore ?? 0, result.keywordScore)
+        existingParent.sourceScore = Math.max(existingParent.sourceScore ?? 0, result.sourceScore)
+        existingParent.excerpt = buildParentExcerpt(parentChunk.text, existingParent.matchedQueries ?? [])
         continue
       }
 
@@ -194,6 +334,9 @@ export async function retrieveParentChunksForWorkspace(
         score: result.score,
         similarity: result.similarity,
         text: parentChunk.text,
+        excerpt: buildParentExcerpt(parentChunk.text, [retrievalQuery]),
+        keywordScore: result.keywordScore,
+        sourceScore: result.sourceScore,
       })
     }
   }

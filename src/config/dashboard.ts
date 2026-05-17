@@ -8,7 +8,7 @@ export const dashboardConfig = {
   },
 
   header: {
-    speedLabel: "Slow",
+    speedLabel: "Search Test",
     engineLabel: "X1",
   },
 
