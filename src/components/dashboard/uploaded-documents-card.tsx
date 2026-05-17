@@ -8,21 +8,29 @@ import {
   Trash2,
   Upload,
 } from "lucide-react"
+import ForceGraph2D, { type NodeObject } from "react-force-graph-2d"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   getDocumentChunks,
+  getWorkspaceGraphEdges,
+  getWorkspaceGraphEntities,
   type StoredDocumentChunk,
+  type StoredGraphEdge,
+  type StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
 import type { UploadedDocument } from "@/types/dashboard"
 import { DocumentMiniCard } from "./document-mini-card"
 import { FilePreviewIcon } from "./file-preview-icon"
 
 const CHUNKS_PER_PAGE = 10
+const MAX_WORKSPACE_GRAPH_NODES = 80
+const MAX_WORKSPACE_GRAPH_LINKS = 140
 
 interface UploadedDocumentsCardProps {
+  workspaceId: string
   title: string
   uploadLabel: string
   manageLabel: string
@@ -35,7 +43,25 @@ interface UploadedDocumentsCardProps {
   onDeleteWorkspace?: () => void
 }
 
+interface WorkspaceGraphNode {
+  documentName?: string
+  id: string
+  name: string
+  selected: boolean
+  type: string
+}
+
+interface WorkspaceGraphLink {
+  confidence: number
+  selected: boolean
+  source: string
+  target: string
+  type: string
+  weight: number
+}
+
 export function UploadedDocumentsCard({
+  workspaceId,
   title,
   uploadLabel,
   manageLabel,
@@ -55,10 +81,15 @@ export function UploadedDocumentsCard({
   const [isUploading, setIsUploading] = useState(false)
   const [childChunkPage, setChildChunkPage] = useState(1)
   const [documentChunks, setDocumentChunks] = useState<StoredDocumentChunk[]>([])
+  const [workspaceGraphEdges, setWorkspaceGraphEdges] = useState<StoredGraphEdge[]>([])
+  const [workspaceGraphEntities, setWorkspaceGraphEntities] = useState<StoredGraphEntity[]>([])
+  const [isLoadingWorkspaceGraph, setIsLoadingWorkspaceGraph] = useState(false)
   const [isLoadingChunks, setIsLoadingChunks] = useState(false)
   const [managementSearchQuery, setManagementSearchQuery] = useState("")
+  const [managementTab, setManagementTab] = useState("files")
   const [managementTypeFilter, setManagementTypeFilter] = useState("all")
   const [parentChunkPage, setParentChunkPage] = useState(1)
+  const [selectedGraphNodeId, setSelectedGraphNodeId] = useState("")
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const selectedDocument = documents.find(
     (document) => document.id === selectedDocumentId
@@ -136,6 +167,38 @@ export function UploadedDocumentsCard({
     ).length,
     [documents]
   )
+  const documentNameById = useMemo(
+    () => new Map(documents.map((document) => [document.id, document.name])),
+    [documents]
+  )
+  const workspaceGraph = useMemo(() => {
+    const visibleEntities = workspaceGraphEntities.slice(0, MAX_WORKSPACE_GRAPH_NODES)
+    const visibleEntityIds = new Set(visibleEntities.map((entity) => entity.id))
+    const nodes = visibleEntities.map((entity) => ({
+      documentName: entity.documentId ? documentNameById.get(entity.documentId) : undefined,
+      id: entity.id,
+      name: entity.name,
+      selected: selectedGraphNodeId === entity.id,
+      type: entity.type,
+    }))
+    const links = workspaceGraphEdges
+      .filter((edge) => visibleEntityIds.has(edge.sourceEntityId) && visibleEntityIds.has(edge.targetEntityId))
+      .slice(0, MAX_WORKSPACE_GRAPH_LINKS)
+      .map((edge) => ({
+        confidence: edge.confidence,
+        selected: selectedGraphNodeId === edge.sourceEntityId || selectedGraphNodeId === edge.targetEntityId,
+        source: edge.sourceEntityId,
+        target: edge.targetEntityId,
+        type: edge.type,
+        weight: edge.weight,
+      }))
+
+    return { links, nodes }
+  }, [documentNameById, selectedGraphNodeId, workspaceGraphEdges, workspaceGraphEntities])
+  const selectedGraphEntity = useMemo(
+    () => workspaceGraphEntities.find((entity) => entity.id === selectedGraphNodeId),
+    [selectedGraphNodeId, workspaceGraphEntities]
+  )
 
   useEffect(() => {
     if (!selectedDocument) {
@@ -178,6 +241,34 @@ export function UploadedDocumentsCard({
       isCurrent = false
     }
   }, [selectedDocument])
+
+  useEffect(() => {
+    let isCurrent = true
+
+    if (!isManagingWorkspace) {
+      return
+    }
+
+    Promise.all([
+      getWorkspaceGraphEntities(workspaceId),
+      getWorkspaceGraphEdges(workspaceId),
+    ])
+      .then(([entities, edges]) => {
+        if (isCurrent) {
+          setWorkspaceGraphEntities(entities)
+          setWorkspaceGraphEdges(edges)
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setIsLoadingWorkspaceGraph(false)
+        }
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [isManagingWorkspace, workspaceId])
 
   function handleOpenDocument(documentId: string) {
     setActiveChunkTab("parents")
@@ -225,7 +316,10 @@ export function UploadedDocumentsCard({
   function handleManageClick() {
     setIsConfirmingDelete(false)
     setManagementSearchQuery("")
+    setManagementTab("files")
     setManagementTypeFilter("all")
+    setIsLoadingWorkspaceGraph(true)
+    setSelectedGraphNodeId("")
     setSelectedDocumentId(null)
     setIsManagingWorkspace(true)
   }
@@ -458,104 +552,269 @@ export function UploadedDocumentsCard({
               </p>
             </div>
 
-            <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto p-5">
-              <dl className="mb-4 grid grid-cols-4 gap-2 text-xs" aria-label="Workspace summary">
-                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
-                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
-                    Files
-                  </dt>
-                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
-                    {formatCount(documents.length)}
-                  </dd>
-                </div>
-                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
-                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
-                    Total size
-                  </dt>
-                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
-                    {formatFileSize(workspaceTotalSize)}
-                  </dd>
-                </div>
-                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
-                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
-                    Chunks
-                  </dt>
-                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
-                    {formatCount(workspaceTotalChunks)}
-                  </dd>
-                </div>
-                <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
-                  <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
-                    Pending
-                  </dt>
-                  <dd className="mt-1 truncate text-sm font-bold text-slate-50">
-                    {formatCount(workspacePendingFiles)}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="mb-4 grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 md:grid-cols-[minmax(0,1fr)_220px]">
-                <label className="relative block">
-                  <span className="sr-only">Search workspace files</span>
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-sky-200/60" />
-                  <Input
-                    type="search"
-                    aria-label="Search workspace files"
-                    placeholder="Search files..."
-                    value={managementSearchQuery}
-                    onChange={(event) => setManagementSearchQuery(event.target.value)}
-                    className="h-10 rounded-xl border-white/10 bg-slate-950/30 pl-9 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
-                  />
-                </label>
-                <label className="block">
-                  <span className="sr-only">Filter files by type</span>
-                  <select
-                    aria-label="Filter files by type"
-                    value={managementTypeFilter}
-                    onChange={(event) => setManagementTypeFilter(event.target.value)}
-                    className="h-10 w-full rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm font-semibold text-slate-100 outline-none transition focus:border-sky-300/60 focus:ring-2 focus:ring-sky-300/20"
+            <Tabs
+              value={managementTab}
+              onValueChange={setManagementTab}
+              className="flex min-h-0 flex-1 flex-col"
+            >
+              <div className="border-b border-white/10 px-5 py-3">
+                <TabsList className="h-auto w-full justify-start gap-2 overflow-x-auto rounded-none bg-transparent p-0 text-slate-200">
+                  <TabsTrigger
+                    value="files"
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-blue-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-blue-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
                   >
-                    <option value="all">All file types</option>
-                    {fileTypeOptions.map((type) => (
-                      <option key={type} value={type}>
-                        {type.toUpperCase()}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    Files
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="graph"
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-violet-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-violet-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                  >
+                    Interactive graph
+                  </TabsTrigger>
+                </TabsList>
               </div>
 
-              {documents.length > 0 && filteredManagementDocuments.length > 0 ? (
-                <div
-                  className="app-scrollbar grid max-h-[372px] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3 lg:grid-cols-6"
-                  role="list"
-                  aria-label="Workspace management files"
-                >
-                  {filteredManagementDocuments.map((doc) => (
-                    <DocumentMiniCard
-                      key={doc.id}
-                      childChunkCount={doc.childChunkCount}
-                      chunkCount={doc.chunkCount}
-                      name={doc.name}
-                      parentChunkCount={doc.parentChunkCount}
-                      tone={doc.tone}
-                      size={doc.size}
-                      toBeProcessed={doc.toBeProcessed}
-                      processingStatus={doc.processingStatus}
-                      onClick={() => handleOpenDocument(doc.id)}
-                    />
-                  ))}
+              <TabsContent value="files" className="m-0 min-h-0 flex-1">
+                <div className="app-scrollbar h-full overflow-y-auto p-5">
+                  <dl className="mb-4 grid grid-cols-4 gap-2 text-xs" aria-label="Workspace summary">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                        Files
+                      </dt>
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                        {formatCount(documents.length)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                        Total size
+                      </dt>
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                        {formatFileSize(workspaceTotalSize)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                        Chunks
+                      </dt>
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                        {formatCount(workspaceTotalChunks)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
+                        Pending
+                      </dt>
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
+                        {formatCount(workspacePendingFiles)}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="mb-4 grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                    <label className="relative block">
+                      <span className="sr-only">Search workspace files</span>
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-sky-200/60" />
+                      <Input
+                        type="search"
+                        aria-label="Search workspace files"
+                        placeholder="Search files..."
+                        value={managementSearchQuery}
+                        onChange={(event) => setManagementSearchQuery(event.target.value)}
+                        className="h-10 rounded-xl border-white/10 bg-slate-950/30 pl-9 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="sr-only">Filter files by type</span>
+                      <select
+                        aria-label="Filter files by type"
+                        value={managementTypeFilter}
+                        onChange={(event) => setManagementTypeFilter(event.target.value)}
+                        className="h-10 w-full rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm font-semibold text-slate-100 outline-none transition focus:border-sky-300/60 focus:ring-2 focus:ring-sky-300/20"
+                      >
+                        <option value="all">All file types</option>
+                        {fileTypeOptions.map((type) => (
+                          <option key={type} value={type}>
+                            {type.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {documents.length > 0 && filteredManagementDocuments.length > 0 ? (
+                    <div
+                      className="app-scrollbar grid max-h-[372px] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3 lg:grid-cols-6"
+                      role="list"
+                      aria-label="Workspace management files"
+                    >
+                      {filteredManagementDocuments.map((doc) => (
+                        <DocumentMiniCard
+                          key={doc.id}
+                          childChunkCount={doc.childChunkCount}
+                          chunkCount={doc.chunkCount}
+                          name={doc.name}
+                          parentChunkCount={doc.parentChunkCount}
+                          tone={doc.tone}
+                          size={doc.size}
+                          toBeProcessed={doc.toBeProcessed}
+                          processingStatus={doc.processingStatus}
+                          onClick={() => handleOpenDocument(doc.id)}
+                        />
+                      ))}
+                    </div>
+                  ) : documents.length > 0 ? (
+                    <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
+                      No files match the current filters.
+                    </div>
+                  ) : (
+                    <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
+                      No files in this workspace.
+                    </div>
+                  )}
                 </div>
-              ) : documents.length > 0 ? (
-                <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
-                  No files match the current filters.
+              </TabsContent>
+
+              <TabsContent value="graph" className="m-0 min-h-0 flex-1">
+                <div className="app-scrollbar h-full overflow-y-auto p-5">
+                  <div className="mb-4 grid grid-cols-4 gap-2 text-xs" aria-label="Workspace graph summary">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <span className="block truncate text-[10px] uppercase tracking-[0.1em] text-violet-200/60">
+                        Entities
+                      </span>
+                      <strong className="mt-1 block truncate text-sm text-slate-50">
+                        {formatCount(workspaceGraphEntities.length)}
+                      </strong>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <span className="block truncate text-[10px] uppercase tracking-[0.1em] text-violet-200/60">
+                        Relations
+                      </span>
+                      <strong className="mt-1 block truncate text-sm text-slate-50">
+                        {formatCount(workspaceGraphEdges.length)}
+                      </strong>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <span className="block truncate text-[10px] uppercase tracking-[0.1em] text-violet-200/60">
+                        Visible nodes
+                      </span>
+                      <strong className="mt-1 block truncate text-sm text-slate-50">
+                        {formatCount(workspaceGraph.nodes.length)}
+                      </strong>
+                    </div>
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <span className="block truncate text-[10px] uppercase tracking-[0.1em] text-violet-200/60">
+                        Visible links
+                      </span>
+                      <strong className="mt-1 block truncate text-sm text-slate-50">
+                        {formatCount(workspaceGraph.links.length)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-violet-300/15 bg-slate-950/20 p-3">
+                    <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-extrabold text-violet-100">
+                          Document knowledge graph
+                        </h3>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Click an entity to inspect the document mentions used by Graph RAG.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={!selectedGraphNodeId}
+                        onClick={() => setSelectedGraphNodeId("")}
+                        className="h-8 rounded-xl border border-white/10 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/15 disabled:opacity-40"
+                      >
+                        Clear selection
+                      </Button>
+                    </div>
+
+                    <div
+                      className="h-[420px] w-full overflow-hidden rounded-xl border border-white/10 bg-slate-950/35"
+                      role="img"
+                      aria-label="Workspace document graph visualization"
+                    >
+                      {isLoadingWorkspaceGraph ? (
+                        <div className="flex h-full items-center justify-center text-sm text-slate-300">
+                          Loading workspace graph…
+                        </div>
+                      ) : workspaceGraph.nodes.length === 0 ? (
+                        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-400">
+                          No graph entities yet. Process PDF, TXT, MD, or CSV files to generate the workspace graph.
+                        </div>
+                      ) : (
+                        <ForceGraph2D<WorkspaceGraphNode, WorkspaceGraphLink>
+                          graphData={workspaceGraph}
+                          width={940}
+                          height={420}
+                          backgroundColor="rgba(15, 23, 42, 0.35)"
+                          cooldownTicks={90}
+                          nodeRelSize={5}
+                          nodeLabel={(node) => `${node.name}${node.documentName ? ` · ${node.documentName}` : ""}`}
+                          nodeColor={(node) => node.selected ? "#c4b5fd" : node.type === "metric" ? "#34d399" : "#38bdf8"}
+                          linkColor={(link) => link.selected ? "#ddd6fe" : "rgba(167, 139, 250, 0.42)"}
+                          linkLabel={(link) => `${link.type} · confidence ${link.confidence.toFixed(2)}`}
+                          linkDirectionalParticles={(link) => link.selected ? 3 : 0}
+                          linkDirectionalParticleWidth={2}
+                          linkWidth={(link) => link.selected ? 2.6 : Math.max(1, Math.min(3, link.weight / 2))}
+                          onNodeClick={(node) => {
+                            if (typeof node.id === "string") {
+                              setSelectedGraphNodeId(node.id)
+                            }
+                          }}
+                          nodeCanvasObject={(node, canvasContext, globalScale) => {
+                            const graphNode = node as NodeObject<WorkspaceGraphNode>
+                            const label = graphNode.name
+                            const fontSize = Math.max(9, 12 / globalScale)
+                            const radius = graphNode.selected ? 7 : 5
+
+                            canvasContext.beginPath()
+                            canvasContext.arc(graphNode.x ?? 0, graphNode.y ?? 0, radius, 0, 2 * Math.PI)
+                            canvasContext.fillStyle = graphNode.selected ? "#8b5cf6" : graphNode.type === "metric" ? "#064e3b" : "#0f172a"
+                            canvasContext.fill()
+                            canvasContext.strokeStyle = graphNode.selected ? "#ddd6fe" : graphNode.type === "metric" ? "#34d399" : "#38bdf8"
+                            canvasContext.lineWidth = graphNode.selected ? 2.4 : 1.4
+                            canvasContext.stroke()
+                            canvasContext.font = `${fontSize}px Inter, system-ui, sans-serif`
+                            canvasContext.fillStyle = "#e0f2fe"
+                            canvasContext.textAlign = "center"
+                            canvasContext.textBaseline = "top"
+                            canvasContext.fillText(
+                              label.length > 24 ? `${label.slice(0, 24)}…` : label,
+                              graphNode.x ?? 0,
+                              (graphNode.y ?? 0) + radius + 4
+                            )
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedGraphEntity ? (
+                    <section className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-slate-200" aria-label="Selected graph entity details">
+                      <p className="font-bold text-violet-100">{selectedGraphEntity.name}</p>
+                      <p className="mt-1 text-slate-400">
+                        {selectedGraphEntity.type} · confidence {selectedGraphEntity.confidence.toFixed(2)} · {documentNameById.get(selectedGraphEntity.documentId ?? "") ?? "Unknown file"}
+                      </p>
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        {selectedGraphEntity.mentions.slice(0, 4).map((mention) => (
+                          <div key={`${mention.chunkId}-${mention.text}`} className="rounded-xl border border-white/10 bg-slate-950/30 p-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-sky-200/60">
+                              Pages {formatPageNumbers(mention.pageNumbers)}
+                            </p>
+                            <p className="mt-2 text-slate-200">{formatTextPreview(mention.text)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
                 </div>
-              ) : (
-                <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-white/15 bg-white/5 text-sm text-slate-300">
-                  No files in this workspace.
-                </div>
-              )}
-            </div>
+              </TabsContent>
+            </Tabs>
 
             <div className="sticky bottom-0 z-10 mt-auto grid shrink-0 grid-cols-1 gap-3 border-t border-white/10 bg-[#111b4b]/95 p-4 backdrop-blur sm:grid-cols-3">
               <Button

@@ -108,6 +108,7 @@ export function WorkspacePage() {
       rightPanel={
         <>
           <UploadedDocumentsCard
+            workspaceId={workspace.id}
             title={labels.uploadedDocumentsTitle}
             uploadLabel={labels.uploadButton}
             manageLabel={labels.manageButton}
