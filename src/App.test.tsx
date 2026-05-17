@@ -1818,6 +1818,28 @@ describe("App", () => {
       ]
     )
 
+    fireEvent.click(await screen.findByRole("button", { name: "Preview Delete_Me.pdf" }))
+
+    const previewDialog = await screen.findByRole("dialog", { name: "File preview for Delete_Me.pdf" })
+
+    expect(within(previewDialog).getByText("File preview")).toBeTruthy()
+    expect(within(previewDialog).getByRole("tab", { name: "Original file" })).toBeTruthy()
+    expect(within(previewDialog).getByRole("tab", { name: "Raw extracted text" })).toBeTruthy()
+    expect(within(previewDialog).getByTitle("Original preview for Delete_Me.pdf")).toBeTruthy()
+
+    fireEvent.click(within(previewDialog).getByRole("tab", { name: "Raw extracted text" }))
+
+    expect(
+      await within(previewDialog).findByText(/Parent chunk 1 joins market retention and revenue context\./)
+    ).toBeTruthy()
+    expect(
+      within(previewDialog).getByText(/Parent chunk 2 joins expansion, churn, and planning context\./)
+    ).toBeTruthy()
+
+    fireEvent.click(within(previewDialog).getByRole("button", { name: "Close file preview" }))
+
+    expect(screen.queryByRole("dialog", { name: "File preview for Delete_Me.pdf" })).toBeNull()
+
     fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
 
     expect(await screen.findByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeTruthy()
@@ -1888,7 +1910,6 @@ describe("App", () => {
 
     expect(screen.queryByRole("dialog", { name: "File details for Delete_Me.pdf" })).toBeNull()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
     fireEvent.click(await screen.findByRole("button", { name: "Delete Delete_Me.pdf" }))
 
     await waitFor(() => {

@@ -15,9 +15,11 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   getDocumentChunks,
+  getWorkspaceDocument,
   getWorkspaceGraphEdges,
   getWorkspaceGraphEntities,
   type StoredDocumentChunk,
+  type StoredWorkspaceDocument,
   type StoredGraphEdge,
   type StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
@@ -89,6 +91,11 @@ export function UploadedDocumentsCard({
   const [managementTab, setManagementTab] = useState("files")
   const [managementTypeFilter, setManagementTypeFilter] = useState("all")
   const [parentChunkPage, setParentChunkPage] = useState(1)
+  const [previewDocumentChunks, setPreviewDocumentChunks] = useState<StoredDocumentChunk[]>([])
+  const [previewDocument, setPreviewDocument] = useState<StoredWorkspaceDocument | null>(null)
+  const [previewDocumentUrl, setPreviewDocumentUrl] = useState("")
+  const [previewTab, setPreviewTab] = useState("original")
+  const [isLoadingPreview, setIsLoadingPreview] = useState(false)
   const [selectedGraphNodeId, setSelectedGraphNodeId] = useState("")
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const selectedDocument = documents.find(
@@ -199,6 +206,24 @@ export function UploadedDocumentsCard({
     () => workspaceGraphEntities.find((entity) => entity.id === selectedGraphNodeId),
     [selectedGraphNodeId, workspaceGraphEntities]
   )
+  const previewMimeType = previewDocument?.mimeType ?? ""
+  const previewOriginalText = useMemo(() => {
+    if (!previewDocument?.content || !previewMimeType.startsWith("text/")) {
+      return ""
+    }
+
+    return new TextDecoder().decode(previewDocument.content)
+  }, [previewDocument, previewMimeType])
+  const rawExtractedText = useMemo(() => {
+    const extractedParentChunks = previewDocumentChunks.filter((chunk) => chunk.level === "parent")
+
+    return extractedParentChunks
+      .map((chunk, index) => [
+        `--- Extracted page ${index + 1} · source pages ${formatPageNumbers(chunk.pageNumbers)} · ${chunk.chunkId} ---`,
+        chunk.text,
+      ].join("\n"))
+      .join("\n\n")
+  }, [previewDocumentChunks])
 
   useEffect(() => {
     if (!selectedDocument) {
@@ -243,6 +268,38 @@ export function UploadedDocumentsCard({
   }, [selectedDocument])
 
   useEffect(() => {
+    return () => {
+      if (previewDocumentUrl && typeof URL.revokeObjectURL === "function") {
+        URL.revokeObjectURL(previewDocumentUrl)
+      }
+    }
+  }, [previewDocumentUrl])
+
+  useEffect(() => {
+    let isCurrent = true
+
+    if (!previewDocument) {
+      return
+    }
+
+    void getDocumentChunks(previewDocument.id)
+      .then((chunks) => {
+        if (isCurrent) {
+          setPreviewDocumentChunks(chunks)
+        }
+      })
+      .finally(() => {
+        if (isCurrent) {
+          setIsLoadingPreview(false)
+        }
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [previewDocument])
+
+  useEffect(() => {
     let isCurrent = true
 
     if (!isManagingWorkspace) {
@@ -278,6 +335,40 @@ export function UploadedDocumentsCard({
     setDocumentChunks([])
     setIsLoadingChunks(true)
     setParentChunkPage(1)
+  }
+
+  async function handleOpenPreview(documentId: string) {
+    setPreviewTab("original")
+    setPreviewDocument(null)
+    setPreviewDocumentChunks([])
+    setIsLoadingPreview(true)
+
+    const storedDocument = await getWorkspaceDocument(documentId)
+
+    if (!storedDocument) {
+      setStatusMessage("File preview is not available for this document.")
+      setIsLoadingPreview(false)
+      return
+    }
+
+    setPreviewDocument(storedDocument)
+    const previewBlob = storedDocument.blob instanceof Blob
+      ? storedDocument.blob
+      : new Blob([storedDocument.content], { type: storedDocument.mimeType })
+
+    setPreviewDocumentUrl(
+      typeof URL.createObjectURL === "function"
+        ? URL.createObjectURL(previewBlob)
+        : ""
+    )
+  }
+
+  function handleClosePreview() {
+    setPreviewDocument(null)
+    setPreviewDocumentChunks([])
+    setPreviewDocumentUrl("")
+    setPreviewTab("original")
+    setIsLoadingPreview(false)
   }
 
   function handleUploadClick() {
@@ -349,16 +440,33 @@ export function UploadedDocumentsCard({
     setStatusMessage("Deleted all files from this workspace.")
   }
 
+  async function handleDeleteDocumentById(documentId: string) {
+    if (!onDeleteDocument) {
+      return
+    }
+
+    const documentToDelete = documents.find((document) => document.id === documentId)
+    const deletedName = documentToDelete?.name ?? "File"
+
+    await onDeleteDocument(documentId)
+
+    if (selectedDocumentId === documentId) {
+      setSelectedDocumentId(null)
+    }
+
+    if (previewDocument?.id === documentId) {
+      handleClosePreview()
+    }
+
+    setStatusMessage(`Deleted ${deletedName} from this workspace.`)
+  }
+
   async function handleDeleteDocument() {
     if (!selectedDocument || !onDeleteDocument) {
       return
     }
 
-    const deletedName = selectedDocument.name
-
-    await onDeleteDocument(selectedDocument.id)
-    setSelectedDocumentId(null)
-    setStatusMessage(`Deleted ${deletedName} from this workspace.`)
+    await handleDeleteDocumentById(selectedDocument.id)
   }
 
   async function handleReprocessDocument() {
@@ -446,6 +554,8 @@ export function UploadedDocumentsCard({
               toBeProcessed={doc.toBeProcessed}
               processingStatus={doc.processingStatus}
               onClick={() => handleOpenDocument(doc.id)}
+              onDeleteClick={onDeleteDocument ? () => void handleDeleteDocumentById(doc.id) : undefined}
+              onPreviewClick={() => void handleOpenPreview(doc.id)}
             />
           ))}
         </div>
@@ -660,6 +770,8 @@ export function UploadedDocumentsCard({
                           toBeProcessed={doc.toBeProcessed}
                           processingStatus={doc.processingStatus}
                           onClick={() => handleOpenDocument(doc.id)}
+                          onDeleteClick={onDeleteDocument ? () => void handleDeleteDocumentById(doc.id) : undefined}
+                          onPreviewClick={() => void handleOpenPreview(doc.id)}
                         />
                       ))}
                     </div>
@@ -846,6 +958,120 @@ export function UploadedDocumentsCard({
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 Delete all files
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewDocument ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`File preview for ${previewDocument.name}`}
+        >
+          <div className="flex h-[82vh] max-h-[82vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
+            <div className="border-b border-white/10 p-5">
+              <div className="flex items-start gap-4">
+                <FilePreviewIcon tone={getDisplayTone(previewDocument)} size="large" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">
+                    File preview
+                  </p>
+                  <h2 className="mt-2 break-words text-lg font-extrabold leading-tight">
+                    {previewDocument.name}
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-300">
+                    {formatFileSize(previewDocument.size)} · {previewMimeType || "Unknown type"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <Tabs value={previewTab} onValueChange={setPreviewTab} className="flex min-h-0 flex-1 flex-col">
+              <div className="border-b border-white/10 px-5 pt-4">
+                <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 text-slate-200">
+                  <TabsTrigger
+                    value="original"
+                    onClick={() => setPreviewTab("original")}
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-blue-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-blue-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                  >
+                    Original file
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="raw"
+                    onClick={() => setPreviewTab("raw")}
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-blue-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-blue-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                  >
+                    Raw extracted text
+                  </TabsTrigger>
+                </TabsList>
+              </div>
+
+              <TabsContent value="original" className="m-0 min-h-0 flex-1 p-5">
+                <div className="flex h-full min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/25">
+                  {previewMimeType === "application/pdf" ? (
+                    <iframe
+                      src={previewDocumentUrl}
+                      title={`Original preview for ${previewDocument.name}`}
+                      className="h-full min-h-[420px] w-full bg-white"
+                    />
+                  ) : previewMimeType.startsWith("image/") ? (
+                    <div className="app-scrollbar flex h-full w-full items-center justify-center overflow-auto p-4">
+                      <img
+                        src={previewDocumentUrl}
+                        alt={`Original preview for ${previewDocument.name}`}
+                        className="max-h-full max-w-full rounded-xl object-contain shadow-2xl"
+                      />
+                    </div>
+                  ) : previewOriginalText ? (
+                    <pre className="app-scrollbar h-full w-full overflow-auto whitespace-pre-wrap break-words p-4 text-sm leading-7 text-slate-100">
+                      {previewOriginalText}
+                    </pre>
+                  ) : (
+                    <div className="flex h-full min-h-[320px] w-full items-center justify-center p-6 text-center">
+                      <div className="max-w-md rounded-2xl border border-dashed border-white/15 bg-white/5 p-6">
+                        <p className="text-sm font-bold text-slate-50">
+                          Original preview is not available for this file type.
+                        </p>
+                        <p className="mt-2 text-xs leading-6 text-slate-300">
+                          Use the raw extracted text tab to inspect the content generated during processing.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="raw" className="m-0 min-h-0 flex-1 p-5">
+                <div className="flex h-full min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/25">
+                  {isLoadingPreview ? (
+                    <div className="flex h-full min-h-[320px] w-full items-center justify-center text-sm text-slate-300">
+                      Loading extracted text…
+                    </div>
+                  ) : rawExtractedText ? (
+                    <pre className="app-scrollbar h-full w-full overflow-auto whitespace-pre-wrap break-words p-4 text-sm leading-7 text-slate-100">
+                      {rawExtractedText}
+                    </pre>
+                  ) : (
+                    <div className="flex h-full min-h-[320px] w-full items-center justify-center px-6 text-center text-sm text-slate-300">
+                      No extracted raw text is available for this file yet.
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
+
+            <div className="sticky bottom-0 z-10 mt-auto flex shrink-0 justify-end border-t border-white/10 bg-[#111b4b]/95 p-4 backdrop-blur">
+              <Button
+                type="button"
+                variant="secondary"
+                aria-label="Close file preview"
+                onClick={handleClosePreview}
+                className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15"
+              >
+                Close
               </Button>
             </div>
           </div>

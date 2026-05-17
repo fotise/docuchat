@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom"
 import { useEffect, useId, useRef, useState } from "react"
+import { Eye, Trash2 } from "lucide-react"
 import type { UploadedDocument } from "@/types/dashboard"
 import { FilePreviewIcon } from "./file-preview-icon"
 
@@ -14,7 +15,9 @@ type DocumentMiniCardProps = Pick<
   | "tone"
   | "toBeProcessed"
 > & {
+  onDeleteClick?: () => void
   onClick?: () => void
+  onPreviewClick?: () => void
 }
 
 const FILE_CARD_TOOLTIP_OPEN_EVENT = "docuchat:file-card-tooltip-open"
@@ -62,7 +65,9 @@ export function DocumentMiniCard({
   size,
   toBeProcessed,
   processingStatus,
+  onDeleteClick,
   onClick,
+  onPreviewClick,
 }: DocumentMiniCardProps) {
   const cardRef = useRef<HTMLButtonElement>(null)
   const instanceId = useId()
@@ -141,26 +146,62 @@ export function DocumentMiniCard({
 
   return (
     <>
-      <button
-        ref={cardRef}
-        type="button"
-        aria-label={`Open details for ${name}`}
-        aria-describedby={tooltipPosition ? tooltipId : undefined}
-        onBlur={hideTooltip}
-        onClick={onClick}
-        onFocus={showTooltip}
+      <div
+        className="group relative h-28 w-full"
         onMouseEnter={showTooltip}
         onMouseLeave={hideTooltip}
-        className="relative h-28 w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 p-2.5 text-left shadow-[0_10px_30px_rgba(0,0,0,.45)] transition hover:border-sky-300/40 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70"
       >
-        <div className="mb-2">
-          <FilePreviewIcon tone={displayTone} size="large" />
-        </div>
+        <button
+          ref={cardRef}
+          type="button"
+          aria-label={`Open details for ${name}`}
+          aria-describedby={tooltipPosition ? tooltipId : undefined}
+          onBlur={hideTooltip}
+          onClick={onClick}
+          onFocus={showTooltip}
+          className="relative h-28 w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 p-2.5 text-left shadow-[0_10px_30px_rgba(0,0,0,.45)] transition hover:border-sky-300/40 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70"
+        >
+          <div className="mb-2">
+            <FilePreviewIcon tone={displayTone} size="large" />
+          </div>
 
-        <div className="truncate text-[11px] leading-4 text-slate-200">
-          {name}
-        </div>
-      </button>
+          <div className="truncate text-[11px] leading-4 text-slate-200">
+            {name}
+          </div>
+        </button>
+
+        {onPreviewClick ? (
+          <button
+            type="button"
+            aria-label={`Preview ${name}`}
+            title="Preview file"
+            onClick={(event) => {
+              event.stopPropagation()
+              onPreviewClick()
+            }}
+            onFocus={showTooltip}
+            className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-lg border border-sky-300/25 bg-slate-950/85 text-sky-100 opacity-0 shadow-[0_8px_20px_rgba(0,0,0,.35)] transition hover:bg-sky-500/20 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70 group-hover:opacity-100"
+          >
+            <Eye className="h-4 w-4" />
+          </button>
+        ) : null}
+
+        {onDeleteClick ? (
+          <button
+            type="button"
+            aria-label={`Delete ${name}`}
+            title="Delete file"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDeleteClick()
+            }}
+            onFocus={showTooltip}
+            className="absolute right-2 top-11 flex h-8 w-8 items-center justify-center rounded-lg border border-rose-300/25 bg-slate-950/85 text-rose-100 opacity-0 shadow-[0_8px_20px_rgba(0,0,0,.35)] transition hover:bg-rose-500/20 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/70 group-hover:opacity-100"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
 
       {tooltipPosition
         ? createPortal(
