@@ -1,4 +1,9 @@
-import type { GenerateReplyInput, LlmClient } from "./types"
+import type {
+  GenerateReplyInput,
+  GenerateRetrievalQueryInput,
+  GenerateRetrievalQueryResult,
+  LlmClient,
+} from "./types"
 
 type ChromeAvailability =
   | "available"
@@ -117,6 +122,32 @@ function buildDocumentContext(documents: GenerateReplyInput["documents"]) {
   ].join("\n")
 }
 
+function buildRetrievedContext({ retrievedChunks }: GenerateReplyInput) {
+  if (!retrievedChunks || retrievedChunks.length === 0) {
+    return "Retrieved parent chunks: none."
+  }
+
+  const chunkLines = retrievedChunks.map((chunk, index) => {
+    const pages = chunk.pageNumbers.length > 0 ? chunk.pageNumbers.join(", ") : "unknown"
+    const source = chunk.documentName ?? chunk.documentId
+
+    return [
+      `Parent chunk ${index + 1}`,
+      `Source: ${source}`,
+      `Pages: ${pages}`,
+      `Similarity: ${chunk.similarity.toFixed(3)}`,
+      chunk.matchedQueries?.length ? `Matched queries: ${chunk.matchedQueries.join(" | ")}` : undefined,
+      `Matched child chunks: ${chunk.matchedChildChunkIds.join(", ")}`,
+      `Text:\n${chunk.text}`,
+    ].filter(Boolean).join("\n")
+  })
+
+  return [
+    "Retrieved parent chunks from semantic search:",
+    ...chunkLines,
+  ].join("\n\n")
+}
+
 function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateReplyInput) {
   return [
     "You are DocuChat, a concise assistant that answers questions about uploaded workspace documents.",
@@ -124,7 +155,10 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
     `Workspace: ${workspaceTitle}.`,
     `Active tab: ${tabLabel}.`,
     buildDocumentContext(documents),
+    "Maintain conversational continuity: resolve pronouns and references from the conversation, answer follow-up questions directly, and do not restart the conversation unless asked.",
     "Use the workspace files list to understand what evidence may be available.",
+    "When retrieved parent chunks are provided, use them as the primary evidence for document-content questions. Cite file names and pages when available.",
+    "If retrieved chunks are weak, partial, or unrelated, say so briefly and answer only from reliable context or ask a focused follow-up question.",
     "For file inventory questions, such as how many files exist, file names, types, sizes, or processing status, answer directly from the workspace files list without asking for document contents.",
     "Prefer processed files. If a file is still processing or waiting to be processed, say that its contents may not be available yet.",
     "If the answer cannot be supported by the available workspace context, say what is missing instead of inventing details.",
@@ -132,27 +166,79 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
   ].join("\n")
 }
 
-function buildUserPrompt({ prompt, messages }: GenerateReplyInput) {
-  const recentMessages = messages
-    .slice(-6)
+function buildConversationContext({ messages }: GenerateReplyInput) {
+  const conversation = messages
     .map((message) => `${message.side === "left" ? "User" : "Assistant"}: ${message.text}`)
     .join("\n")
 
-  return [
-    recentMessages ? `Recent conversation:\n${recentMessages}` : "Recent conversation: none",
-    `User request: ${prompt}`,
-  ].join("\n\n")
+  return conversation ? `Conversation so far:\n${conversation}` : "Conversation so far: none"
 }
 
 function buildPrompt(input: GenerateReplyInput) {
   return [
     "System context:",
     buildSystemPrompt(input),
-    "Current user request — answer this request now and give it priority over the recent conversation:",
+    input.retrievalIntent ? `Detected user intent:\n${input.retrievalIntent}` : "Detected user intent: not provided",
+    input.retrievalQuery ? `Semantic retrieval query used for evidence:\n${input.retrievalQuery}` : "Semantic retrieval query used for evidence: none",
+    input.retrievalRationale ? `Retrieval rationale:\n${input.retrievalRationale}` : "Retrieval rationale: not provided",
+    buildRetrievedContext(input),
+    "Current user request — answer this request now. Preserve conversation context, but prioritize this latest request:",
     input.prompt,
-    "Recent conversation for continuity only:",
-    buildUserPrompt(input),
+    "Conversation context for continuity and reference:",
+    buildConversationContext(input),
   ].join("\n\n")
+}
+
+function buildRetrievalQueryPrompt({ prompt, messages, workspaceTitle, tabLabel }: GenerateRetrievalQueryInput) {
+  const conversation = messages
+    .map((message) => `${message.side === "left" ? "User" : "Assistant"}: ${message.text}`)
+    .join("\n")
+
+  return [
+    "Create a semantic-search query for retrieving document chunks before answering the user's latest question.",
+    `Workspace: ${workspaceTitle}.`,
+    `Active tab: ${tabLabel}.`,
+    conversation ? `Conversation:\n${conversation}` : "Conversation: none",
+    `Latest user question:\n${prompt}`,
+    "Return only strict JSON with these fields:",
+    `{"intent":"short intent","needsDocumentSearch":true,"searchQuery":"standalone retrieval query using the user's terminology and resolved references","rationale":"short rationale"}`,
+    "The searchQuery must be standalone: rewrite vague follow-ups like 'and that one?' using the relevant entities from the conversation.",
+    "Keep important names, dates, products, clauses, metrics, and document terms from the user's wording.",
+    "Set needsDocumentSearch to false only for greetings, UI-only actions, or questions that can be answered from the file inventory without document contents.",
+  ].join("\n\n")
+}
+
+function parseRetrievalQueryResult(response: string, fallbackPrompt: string): GenerateRetrievalQueryResult {
+  const jsonMatch = response.match(/\{[\s\S]*\}/)
+
+  if (!jsonMatch) {
+    return {
+      intent: "Answer the latest user question.",
+      needsDocumentSearch: true,
+      searchQuery: fallbackPrompt,
+      rationale: "The retrieval-query response was not valid JSON.",
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Partial<GenerateRetrievalQueryResult>
+
+    return {
+      intent: typeof parsed.intent === "string" ? parsed.intent : "Answer the latest user question.",
+      needsDocumentSearch: typeof parsed.needsDocumentSearch === "boolean" ? parsed.needsDocumentSearch : true,
+      searchQuery: typeof parsed.searchQuery === "string" && parsed.searchQuery.trim().length > 0
+        ? parsed.searchQuery
+        : fallbackPrompt,
+      rationale: typeof parsed.rationale === "string" ? parsed.rationale : undefined,
+    }
+  } catch {
+    return {
+      intent: "Answer the latest user question.",
+      needsDocumentSearch: true,
+      searchQuery: fallbackPrompt,
+      rationale: "The retrieval-query JSON could not be parsed.",
+    }
+  }
 }
 
 export function createChromeLocalLlmClient(): LlmClient {
@@ -192,6 +278,34 @@ export function createChromeLocalLlmClient(): LlmClient {
         return await session.prompt(buildPrompt(input), {
           signal: input.signal,
         })
+      } finally {
+        session.destroy?.()
+      }
+    },
+    generateRetrievalQuery: async (input) => {
+      const languageModel = getChromeLanguageModel()
+
+      if (!languageModel) {
+        throw new Error("Chrome local LLM is not available in this browser.")
+      }
+
+      const availability = await getAvailability(languageModel)
+
+      if (!supportedAvailability.has(availability)) {
+        throw new Error(`Chrome local LLM is ${availability}.`)
+      }
+
+      const session = await languageModel.create({
+        systemPrompt: "You generate concise semantic-search queries for a document chat application. Return strict JSON only.",
+        signal: input.signal,
+      })
+
+      try {
+        const response = await session.prompt(buildRetrievalQueryPrompt(input), {
+          signal: input.signal,
+        })
+
+        return parseRetrievalQueryResult(response, input.prompt)
       } finally {
         session.destroy?.()
       }

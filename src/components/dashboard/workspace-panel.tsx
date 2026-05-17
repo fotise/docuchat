@@ -9,6 +9,7 @@ import {
   createStoredChatMessage,
   getRecentChatMessages,
 } from "@/lib/chat-history/indexed-db"
+import { generateRagReply } from "@/lib/chat/rag-chat"
 import { useLlmClient } from "@/lib/llm/context"
 import { useDashboardStore } from "@/store/dashboard-store"
 import type {
@@ -132,17 +133,12 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     abortControllersRef.current.push(abortController)
 
     try {
-      const assistantText = await llmClient.generateReply({
-        workspaceTitle: workspace.title,
-        tabLabel: tabLabelAtSend,
-        documents: workspace.uploadedDocuments.map((document) => ({
-          name: document.name,
-          type: document.type,
-          size: document.size,
-          processingStatus: document.processingStatus,
-        })),
+      const assistantText = await generateRagReply({
+        workspace,
         prompt: trimmed,
+        tabLabel: tabLabelAtSend,
         messages: currentMessages,
+        llmClient,
         signal: abortController.signal,
       })
 

@@ -13,12 +13,17 @@ import {
   getFileProcessorKind,
   processPdfPipeline,
 } from "@/lib/file-processing/processors"
-import { semanticSearchWorkspace } from "@/lib/file-processing/semantic-search"
+import {
+  retrieveParentChunksForWorkspace,
+  semanticSearchWorkspace,
+} from "@/lib/file-processing/semantic-search"
+import { generateRagReply } from "@/lib/chat/rag-chat"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
+import { dashboardConfig } from "@/config/dashboard"
 import App from "./App"
 
 let lastGenerateReplyInput: GenerateReplyInput | null = null
@@ -184,6 +189,163 @@ describe("App", () => {
     })
     expect(results[0].similarity).toBeGreaterThan(0.45)
     expect(results[0].score).toBeGreaterThan(0)
+  })
+
+  it("retrieves top parent chunks from semantic child matches", async () => {
+    const results = await retrieveParentChunksForWorkspace("market-research", "retention", {
+      generateEmbeddings: async () => [
+        {
+          dimensions: 2,
+          embedding: [1, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getChunks: async () => [
+        {
+          id: "parent-1",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          chunkId: "parent-1",
+          level: "parent",
+          text: "Parent context about retention and customer health.",
+          pageNumbers: [1, 2],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-1",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          chunkId: "child-1",
+          parentChunkId: "parent-1",
+          level: "child",
+          text: "Retention signals.",
+          pageNumbers: [1],
+          embedding: [1, 0],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 2,
+          createdAt: 2,
+        },
+        {
+          id: "child-2",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          chunkId: "child-2",
+          parentChunkId: "parent-1",
+          level: "child",
+          text: "Customer health.",
+          pageNumbers: [2],
+          embedding: [0.95, 0.05],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          order: 3,
+          createdAt: 3,
+        },
+      ],
+      getDocuments: async () => [
+        {
+          id: "doc-1",
+          workspaceId: "market-research",
+          name: "Signals.pdf",
+          type: "pdf",
+          tone: "blue",
+          mimeType: "application/pdf",
+          blob: new Blob(["signals"]),
+          content: new ArrayBuffer(1),
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({
+      documentName: "Signals.pdf",
+      matchedChildChunkIds: ["child-1", "child-2"],
+      matchedQueries: ["retention"],
+      pageNumbers: [1, 2],
+      parentChunkId: "parent-1",
+      text: "Parent context about retention and customer health.",
+    })
+  })
+
+  it("generates a retrieval query before answering chat with parent chunks", async () => {
+    let retrievalQueryInput: GenerateReplyInput | null = null
+    let finalReplyInput: GenerateReplyInput | null = null
+    let retrievedQuery = ""
+    const workspace = {
+      ...dashboardConfig.workspaces[0],
+      semanticSearchThreshold: 0.42,
+    }
+    const llmClient: LlmClient = {
+      id: "rag-test-llm",
+      label: "RAG Test LLM",
+      isAvailable: async () => true,
+      generateRetrievalQuery: async (input) => {
+        retrievalQueryInput = input
+        return {
+          intent: "Explain market retention.",
+          needsDocumentSearch: true,
+          searchQuery: "market retention evidence",
+        }
+      },
+      generateReply: async (input) => {
+        finalReplyInput = input
+        return "RAG reply"
+      },
+    }
+
+    const reply = await generateRagReply({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "What does it say about retention?",
+      messages: [
+        {
+          id: "previous-user",
+          side: "left",
+          text: "Focus on the market overview.",
+        },
+      ],
+      llmClient,
+      retrieveParentChunks: async (_workspaceId, query, options) => {
+        retrievedQuery = query
+        expect(options.additionalQueries).toEqual(["What does it say about retention?"])
+        expect(options.minSimilarity).toBe(0.42)
+        expect(options.parentLimit).toBe(10)
+
+        return [
+          {
+            documentId: "doc-1",
+            documentName: "Market_Overview.pdf",
+            matchedChildChunkIds: ["child-1"],
+            pageNumbers: [3],
+            parentChunkId: "parent-1",
+            score: 0.91,
+            similarity: 0.86,
+            text: "Retention improved with healthier customer cohorts.",
+          },
+        ]
+      },
+    })
+
+    expect(reply).toBe("RAG reply")
+    expect(retrievalQueryInput?.prompt).toBe("What does it say about retention?")
+    expect(retrievalQueryInput?.messages.at(-1)).toMatchObject({
+      side: "left",
+      text: "What does it say about retention?",
+    })
+    expect(retrievedQuery).toBe("market retention evidence")
+    expect(finalReplyInput?.prompt).toBe("What does it say about retention?")
+    expect(finalReplyInput?.messages.at(-1)).toMatchObject({
+      side: "left",
+      text: "What does it say about retention?",
+    })
+    expect(finalReplyInput?.retrievalIntent).toBe("Explain market retention.")
+    expect(finalReplyInput?.retrievalQuery).toBe("market retention evidence")
+    expect(finalReplyInput?.retrievedChunks?.[0]).toMatchObject({
+      documentName: "Market_Overview.pdf",
+      parentChunkId: "parent-1",
+      text: "Retention improved with healthier customer cohorts.",
+    })
   })
 
   it("opens workspace management and deletes all workspace files", async () => {
@@ -1082,8 +1244,9 @@ describe("App", () => {
     expect(promptPayload).toContain("Workspace files count: 2.")
     expect(promptPayload).toContain("Workspace files (2):")
     expect(promptPayload).toContain("Current user request — answer this request now")
-    expect(promptPayload).toContain("Recent conversation for continuity only:")
-    expect(promptPayload).toContain("User request: Summarize the files")
+    expect(promptPayload).toContain("Conversation context for continuity and reference:")
+    expect(promptPayload).toContain("Conversation so far: none")
+    expect(promptPayload).toContain("Summarize the files")
   })
 
   it("prioritizes file inventory context for file count questions", async () => {
@@ -1136,8 +1299,10 @@ describe("App", () => {
     expect(promptPayload).toContain("Workspace files count: 2.")
     expect(promptPayload).toContain("Current user request — answer this request now")
     expect(promptPayload.indexOf("Quanti file ho?")).toBeLessThan(
-      promptPayload.indexOf("Recent conversation for continuity only:")
+      promptPayload.indexOf("Conversation context for continuity and reference:")
     )
+    expect(promptPayload).toContain("User: Summarize the vendor notes.")
+    expect(promptPayload).toContain("Assistant: Please provide the vendor notes.")
     expect(promptPayload).toContain(
       "answer directly from the workspace files list without asking for document contents"
     )

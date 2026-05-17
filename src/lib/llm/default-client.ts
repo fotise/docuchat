@@ -10,6 +10,21 @@ export function createDefaultLlmClient(): LlmClient {
     id: "docuchat-llm",
     label: "DocuChat LLM",
     isAvailable: async () => true,
+    generateRetrievalQuery: async (input) => {
+      if (await chromeLocalLlm.isAvailable()) {
+        return chromeLocalLlm.generateRetrievalQuery?.(input) ?? {
+          intent: "Answer the latest user question.",
+          needsDocumentSearch: true,
+          searchQuery: input.prompt,
+        }
+      }
+
+      return {
+        intent: "Answer the latest user question.",
+        needsDocumentSearch: true,
+        searchQuery: input.prompt,
+      }
+    },
     generateReply: async (input) => {
       try {
         if (await chromeLocalLlm.isAvailable()) {
