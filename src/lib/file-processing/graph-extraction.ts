@@ -5,10 +5,35 @@ import type {
   StoredGraphEdge,
   StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
+import type { GeneratedEmbedding } from "./embeddings"
 
 interface DocumentGraph {
   edges: StoredGraphEdge[]
   entities: StoredGraphEntity[]
+}
+
+export interface LlmGraphEntity {
+  aliases?: string[]
+  confidence?: number
+  name: string
+  type?: GraphEntityType
+}
+
+export interface LlmGraphRelation {
+  confidence?: number
+  evidence?: string
+  source: string
+  target: string
+  type?: GraphEdgeType
+}
+
+export interface LlmGraphExtractionResult {
+  entities?: LlmGraphEntity[]
+  relations?: LlmGraphRelation[]
+}
+
+interface BuildDocumentGraphOptions {
+  llmExtraction?: LlmGraphExtractionResult
 }
 
 const MAX_ENTITIES_PER_CHUNK = 8
@@ -123,10 +148,155 @@ function createEdgeId(workspaceId: string, documentId: string, leftId: string, r
   return `${workspaceId}:${documentId}:edge:${type}:${leftId}:${rightId}`
 }
 
+function findFirstChildMention(chunks: StoredDocumentChunk[], names: string[]) {
+  const normalizedNames = names.map(normalizeEntityName).filter(Boolean)
+
+  return chunks.find((chunk) => {
+    if (chunk.level !== "child") {
+      return false
+    }
+
+    const normalizedText = normalizeEntityName(chunk.text)
+
+    return normalizedNames.some((name) => normalizedText.includes(name))
+  })
+}
+
+function ensureLlmEntity(
+  workspaceId: string,
+  documentId: string,
+  chunks: StoredDocumentChunk[],
+  entityByName: Map<string, StoredGraphEntity>,
+  entity: LlmGraphEntity,
+  now: number
+) {
+  const normalizedName = normalizeEntityName(entity.name)
+
+  if (!normalizedName) {
+    return undefined
+  }
+
+  const aliases = uniqueValues([entity.name, ...(entity.aliases ?? [])])
+  const existingEntity = entityByName.get(normalizedName)
+  const mentionChunk = findFirstChildMention(chunks, aliases)
+  const mention = mentionChunk
+    ? {
+        documentId,
+        chunkId: mentionChunk.chunkId,
+        parentChunkId: mentionChunk.parentChunkId,
+        pageNumbers: mentionChunk.pageNumbers,
+        text: createEvidenceText(mentionChunk.text),
+      }
+    : undefined
+
+  if (existingEntity) {
+    existingEntity.aliases = uniqueValues([...existingEntity.aliases, ...aliases])
+    existingEntity.confidence = Math.max(existingEntity.confidence, entity.confidence ?? 0.7)
+    existingEntity.type = entity.type ?? existingEntity.type
+    existingEntity.updatedAt = now
+
+    if (mention) {
+      existingEntity.mentions.push(mention)
+    }
+
+    return existingEntity
+  }
+
+  const createdEntity: StoredGraphEntity = {
+    id: `${workspaceId}:${documentId}:entity:${createSafeId(normalizedName)}`,
+    workspaceId,
+    documentId,
+    name: entity.name,
+    normalizedName,
+    type: entity.type ?? inferEntityType(entity.name),
+    aliases,
+    mentions: mention ? [mention] : [],
+    confidence: entity.confidence ?? 0.7,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  entityByName.set(normalizedName, createdEntity)
+  return createdEntity
+}
+
+function mergeLlmExtraction(
+  workspaceId: string,
+  documentId: string,
+  chunks: StoredDocumentChunk[],
+  entityByName: Map<string, StoredGraphEntity>,
+  edgeByPair: Map<string, StoredGraphEdge>,
+  extraction: LlmGraphExtractionResult | undefined,
+  now: number
+) {
+  if (!extraction) {
+    return
+  }
+
+  for (const entity of extraction.entities ?? []) {
+    ensureLlmEntity(workspaceId, documentId, chunks, entityByName, entity, now)
+  }
+
+  for (const relation of extraction.relations ?? []) {
+    const sourceEntity = ensureLlmEntity(
+      workspaceId,
+      documentId,
+      chunks,
+      entityByName,
+      { name: relation.source },
+      now
+    )
+    const targetEntity = ensureLlmEntity(
+      workspaceId,
+      documentId,
+      chunks,
+      entityByName,
+      { name: relation.target },
+      now
+    )
+
+    if (!sourceEntity || !targetEntity) {
+      continue
+    }
+
+    const edgeType = relation.type ?? "related_to"
+    const edgeId = createEdgeId(
+      workspaceId,
+      documentId,
+      sourceEntity.id,
+      targetEntity.id,
+      edgeType
+    )
+    const evidenceText = relation.evidence
+      ? createEvidenceText(relation.evidence)
+      : sourceEntity.mentions[0]?.text ?? targetEntity.mentions[0]?.text ?? "LLM extracted relation"
+    const chunkIds = uniqueValues([
+      sourceEntity.mentions[0]?.chunkId,
+      targetEntity.mentions[0]?.chunkId,
+    ].filter((value): value is string => Boolean(value)))
+
+    edgeByPair.set(edgeId, {
+      id: edgeId,
+      workspaceId,
+      sourceEntityId: sourceEntity.id,
+      targetEntityId: targetEntity.id,
+      type: edgeType,
+      documentIds: [documentId],
+      chunkIds,
+      weight: 2,
+      evidenceText: [evidenceText],
+      confidence: relation.confidence ?? 0.72,
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+}
+
 export function buildDocumentGraph(
   workspaceId: string,
   documentId: string,
-  chunks: StoredDocumentChunk[]
+  chunks: StoredDocumentChunk[],
+  options: BuildDocumentGraphOptions = {}
 ): DocumentGraph {
   const now = Date.now()
   const childChunks = chunks.filter((chunk) => chunk.level === "child")
@@ -223,8 +393,39 @@ export function buildDocumentGraph(
     }
   }
 
+  mergeLlmExtraction(
+    workspaceId,
+    documentId,
+    chunks,
+    entityByName,
+    edgeByPair,
+    options.llmExtraction,
+    now
+  )
+
   return {
     edges: Array.from(edgeByPair.values()),
     entities: Array.from(entityByName.values()),
+  }
+}
+
+export function applyGraphEntityEmbeddings(
+  graph: DocumentGraph,
+  embeddings: GeneratedEmbedding[]
+): DocumentGraph {
+  return {
+    ...graph,
+    entities: graph.entities.map((entity, index) => {
+      const embedding = embeddings[index]
+
+      return embedding
+        ? {
+            ...entity,
+            embedding: embedding.embedding,
+            embeddingDimensions: embedding.dimensions,
+            embeddingModel: embedding.model,
+          }
+        : entity
+    }),
   }
 }

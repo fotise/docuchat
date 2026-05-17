@@ -13,7 +13,7 @@ import {
   generateEmbeddings,
   type GeneratedEmbedding,
 } from "./embeddings"
-import { buildDocumentGraph } from "./graph-extraction"
+import { applyGraphEntityEmbeddings, buildDocumentGraph } from "./graph-extraction"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
 export type FileProcessorKind =
@@ -263,12 +263,25 @@ export async function processPdfPipeline(
     job.documentId,
     storedChunks
   )
+  const graphEntityEmbeddings = documentGraph.entities.length > 0
+    ? await (options.generateEmbeddings ?? generateEmbeddings)(
+        documentGraph.entities.map((entity) => [
+          entity.name,
+          ...entity.aliases,
+          entity.mentions[0]?.text ?? "",
+        ].join("\n"))
+      )
+    : []
+  const embeddedDocumentGraph = applyGraphEntityEmbeddings(
+    documentGraph,
+    graphEntityEmbeddings
+  )
 
   await replaceDocumentGraph(
     job.workspaceId,
     job.documentId,
-    documentGraph.entities,
-    documentGraph.edges
+    embeddedDocumentGraph.entities,
+    embeddedDocumentGraph.edges
   )
 
   return {
@@ -278,8 +291,8 @@ export async function processPdfPipeline(
       0
     ),
     embeddingCount: childEmbeddings.length,
-    graphEdgeCount: documentGraph.edges.length,
-    graphEntityCount: documentGraph.entities.length,
+    graphEdgeCount: embeddedDocumentGraph.edges.length,
+    graphEntityCount: embeddedDocumentGraph.entities.length,
     pageCount: pages.length,
     parentChunkCount: parentChunks.length,
     processor: "pdf",

@@ -13,7 +13,10 @@ import {
 } from "@/lib/chat-history/indexed-db"
 import { createParentChildChunks } from "@/lib/file-processing/chunking"
 import { buildDocumentGraph } from "@/lib/file-processing/graph-extraction"
-import { retrieveGraphContextForWorkspace } from "@/lib/file-processing/graph-search"
+import {
+  graphSearchWorkspace,
+  retrieveGraphContextForWorkspace,
+} from "@/lib/file-processing/graph-search"
 import {
   getFileProcessorKind,
   processPdfPipeline,
@@ -107,6 +110,8 @@ describe("App", () => {
 
     expect(await screen.findByRole("dialog", { name: "Semantic search" })).toBeTruthy()
     expect(screen.getByText("RAG search debugger")).toBeTruthy()
+    expect(screen.getByText("Interactive graph view")).toBeTruthy()
+    expect(screen.getByText("No graph nodes yet.")).toBeTruthy()
     expect(screen.getByRole("searchbox", { name: "Semantic search query" })).toBeTruthy()
     expect(screen.getByRole("spinbutton", { name: "Semantic search threshold" })).toHaveValue(0.3)
     expect(screen.getByRole("spinbutton", { name: "RAG child match limit" })).toHaveValue(40)
@@ -418,6 +423,106 @@ describe("App", () => {
       retrievalSource: "graph",
     })
     expect(graphChunks[0].graphEntityNames?.join(" ").toLowerCase()).toContain("retention")
+  })
+
+  it("merges LLM-extracted graph entities and relations", () => {
+    const graph = buildDocumentGraph(
+      "legal-files",
+      "doc-llm-graph",
+      [
+        {
+          id: "parent-llm-graph",
+          workspaceId: "legal-files",
+          documentId: "doc-llm-graph",
+          chunkId: "parent-llm-graph",
+          level: "parent",
+          text: "Delivery disruption can delay milestones.",
+          pageNumbers: [7],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-llm-graph",
+          workspaceId: "legal-files",
+          documentId: "doc-llm-graph",
+          chunkId: "child-llm-graph",
+          parentChunkId: "parent-llm-graph",
+          level: "child",
+          text: "Delivery disruption can delay milestones.",
+          pageNumbers: [7],
+          order: 2,
+          createdAt: 2,
+        },
+      ],
+      {
+        llmExtraction: {
+          entities: [
+            { name: "Supply Risk", type: "topic" },
+            { name: "Delivery Delay", type: "topic" },
+          ],
+          relations: [
+            {
+              confidence: 0.9,
+              evidence: "Supply risk can cause delivery delay.",
+              source: "Supply Risk",
+              target: "Delivery Delay",
+              type: "causes",
+            },
+          ],
+        },
+      }
+    )
+
+    expect(graph.entities.map((entity) => entity.name)).toEqual(
+      expect.arrayContaining(["Supply Risk", "Delivery Delay"])
+    )
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          confidence: 0.9,
+          type: "causes",
+        }),
+      ])
+    )
+  })
+
+  it("uses graph entity embeddings when lexical entity search is weak", async () => {
+    const results = await graphSearchWorkspace("market-research", "loyalty signal", {
+      generateEmbeddings: async () => [
+        {
+          dimensions: 2,
+          embedding: [1, 0],
+          model: "test-embedding-model",
+        },
+      ],
+      getEdges: async () => [],
+      getEntities: async () => [
+        {
+          id: "entity-retention",
+          workspaceId: "market-research",
+          documentId: "doc-1",
+          name: "Customer retention",
+          normalizedName: "customer retention",
+          type: "topic",
+          aliases: ["Customer retention"],
+          mentions: [],
+          confidence: 0.8,
+          embedding: [0.99, 0.01],
+          embeddingDimensions: 2,
+          embeddingModel: "test-embedding-model",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({
+      entity: {
+        name: "Customer retention",
+      },
+    })
+    expect(results[0].score).toBeGreaterThan(0.3)
   })
 
   it("merges graph context into hybrid graph RAG retrieval", async () => {

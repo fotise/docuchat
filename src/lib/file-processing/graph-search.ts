@@ -7,10 +7,13 @@ import {
   type StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
 import type { RetrievedContextChunk } from "@/lib/llm/types"
+import { cosineSimilarity } from "./semantic-search"
+import { generateEmbeddings, type GeneratedEmbedding } from "./embeddings"
 
 interface GraphSearchOptions {
   depth?: number
   entityQueries?: string[]
+  generateEmbeddings?: (texts: string[]) => Promise<GeneratedEmbedding[]>
   getChunks?: (workspaceId: string) => Promise<StoredDocumentChunk[]>
   getEdges?: (workspaceId: string) => Promise<StoredGraphEdge[]>
   getEntities?: (workspaceId: string) => Promise<StoredGraphEntity[]>
@@ -22,6 +25,7 @@ export interface GraphSearchResult {
   score: number
   matchedName: string
   relatedEntities: Array<{
+    depth: number
     edge: StoredGraphEdge
     entity: StoredGraphEntity
     score: number
@@ -78,6 +82,31 @@ function scoreEntity(query: string, entity: StoredGraphEntity) {
   return matchedTokens.length / queryTokens.length
 }
 
+async function scoreEntitiesWithEmbeddings(
+  queries: string[],
+  entities: StoredGraphEntity[],
+  options: GraphSearchOptions
+) {
+  if (!entities.some((entity) => entity.embedding && entity.embedding.length > 0)) {
+    return new Map<string, number>()
+  }
+
+  const [queryEmbedding] = await (options.generateEmbeddings ?? generateEmbeddings)([
+    queries.join("\n"),
+  ])
+
+  if (!queryEmbedding?.embedding.length) {
+    return new Map<string, number>()
+  }
+
+  return new Map(
+    entities.map((entity) => [
+      entity.id,
+      entity.embedding ? cosineSimilarity(queryEmbedding.embedding, entity.embedding) : 0,
+    ])
+  )
+}
+
 function getOppositeEntityId(edge: StoredGraphEdge, entityId: string) {
   if (edge.sourceEntityId === entityId) {
     return edge.targetEntityId
@@ -92,6 +121,55 @@ function getOppositeEntityId(edge: StoredGraphEdge, entityId: string) {
 
 function buildChunkLookup(chunks: StoredDocumentChunk[]) {
   return new Map(chunks.map((chunk) => [chunk.chunkId, chunk]))
+}
+
+function traverseRelatedEntities(
+  rootEntity: StoredGraphEntity,
+  entityById: Map<string, StoredGraphEntity>,
+  edgesByEntityId: Map<string, StoredGraphEdge[]>,
+  maxDepth: number
+) {
+  const related: GraphSearchResult["relatedEntities"] = []
+  const visited = new Set([rootEntity.id])
+  const queue: Array<{ depth: number; entityId: string; pathScore: number }> = [
+    { depth: 0, entityId: rootEntity.id, pathScore: 1 },
+  ]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+
+    if (!current || current.depth >= maxDepth) {
+      continue
+    }
+
+    for (const edge of edgesByEntityId.get(current.entityId) ?? []) {
+      const relatedEntityId = getOppositeEntityId(edge, current.entityId)
+      const relatedEntity = relatedEntityId ? entityById.get(relatedEntityId) : undefined
+
+      if (!relatedEntity || visited.has(relatedEntity.id)) {
+        continue
+      }
+
+      const edgeScore = Math.min(1, edge.confidence * 0.5 + Math.min(edge.weight / 5, 1) * 0.5)
+      const score = current.pathScore * edgeScore * (1 / (current.depth + 1))
+      const nextDepth = current.depth + 1
+
+      visited.add(relatedEntity.id)
+      related.push({
+        depth: nextDepth,
+        edge,
+        entity: relatedEntity,
+        score,
+      })
+      queue.push({
+        depth: nextDepth,
+        entityId: relatedEntity.id,
+        pathScore: score,
+      })
+    }
+  }
+
+  return related.sort((left, right) => right.score - left.score)
 }
 
 function getParentChunk(chunk: StoredDocumentChunk, chunkById: Map<string, StoredDocumentChunk>) {
@@ -112,6 +190,10 @@ function mergeGraphChunk(
 ) {
   const graphEntityNames = [entity.name, relatedEntity?.name].filter((name): name is string => Boolean(name))
   const graphEdgeTypes = edge ? [edge.type] : []
+  const embeddingDimensions = Math.max(
+    entity.embeddingDimensions ?? 0,
+    relatedEntity?.embeddingDimensions ?? 0
+  ) || undefined
   const mentions = edge
     ? entity.mentions.filter((mention) => edge.chunkIds.includes(mention.chunkId))
     : entity.mentions
@@ -138,6 +220,7 @@ function mergeGraphChunk(
       existing.retrievalSource = existing.retrievalSource === "semantic" ? "hybrid" : "graph"
       existing.graphEntityNames = Array.from(new Set([...(existing.graphEntityNames ?? []), ...graphEntityNames]))
       existing.graphEdgeTypes = Array.from(new Set([...(existing.graphEdgeTypes ?? []), ...graphEdgeTypes]))
+      existing.keywordScore = Math.max(existing.keywordScore ?? 0, embeddingDimensions ? 1 : 0)
 
       if (!existing.matchedChildChunkIds.includes(childChunk.chunkId)) {
         existing.matchedChildChunkIds.push(childChunk.chunkId)
@@ -159,6 +242,7 @@ function mergeGraphChunk(
       similarity: score,
       text: parentChunk.text,
       excerpt: mention.text,
+      keywordScore: embeddingDimensions ? 1 : undefined,
     })
   }
 }
@@ -175,6 +259,7 @@ export async function graphSearchWorkspace(
   const queries = [query, ...(options.entityQueries ?? [])].map((item) => item.trim()).filter(Boolean)
   const entityById = new Map(entities.map((entity) => [entity.id, entity]))
   const edgesByEntityId = new Map<string, StoredGraphEdge[]>()
+  const embeddingScores = await scoreEntitiesWithEmbeddings(queries, entities, options)
 
   for (const edge of edges) {
     edgesByEntityId.set(edge.sourceEntityId, [
@@ -189,23 +274,15 @@ export async function graphSearchWorkspace(
 
   return entities
     .map((entity) => {
-      const bestScore = Math.max(...queries.map((item) => scoreEntity(item, entity)), 0)
-      const relatedEntities = (edgesByEntityId.get(entity.id) ?? [])
-        .map((edge) => {
-          const relatedEntityId = getOppositeEntityId(edge, entity.id)
-          const relatedEntity = relatedEntityId ? entityById.get(relatedEntityId) : undefined
-
-          return relatedEntity
-            ? {
-                edge,
-                entity: relatedEntity,
-                score: Math.min(1, edge.confidence * 0.5 + Math.min(edge.weight / 5, 1) * 0.5),
-              }
-            : undefined
-        })
-        .filter((item): item is NonNullable<typeof item> => Boolean(item))
-        .sort((left, right) => right.score - left.score)
-        .slice(0, options.depth ?? 1)
+      const lexicalScore = Math.max(...queries.map((item) => scoreEntity(item, entity)), 0)
+      const embeddingScore = embeddingScores.get(entity.id) ?? 0
+      const bestScore = Math.min(1, lexicalScore * 0.65 + Math.max(0, embeddingScore) * 0.35)
+      const relatedEntities = traverseRelatedEntities(
+        entity,
+        entityById,
+        edgesByEntityId,
+        options.depth ?? 1
+      )
 
       return {
         entity,

@@ -7,7 +7,7 @@ import type {
 } from "@/types/dashboard"
 
 const DB_NAME = "docuchat"
-const DB_VERSION = 5
+const DB_VERSION = 6
 const MESSAGE_STORE = "messages"
 const WORKSPACE_STORE = "workspaces"
 const DOCUMENT_STORE = "documents"
@@ -56,6 +56,11 @@ export type GraphEntityType =
   | "unknown"
 
 export type GraphEdgeType = "co_occurs_with" | "mentioned_in" | "related_to" | "unknown"
+  | "causes"
+  | "compares_to"
+  | "contradicts"
+  | "depends_on"
+  | "part_of"
 
 export interface GraphMention {
   documentId: string
@@ -75,6 +80,9 @@ export interface StoredGraphEntity {
   aliases: string[]
   mentions: GraphMention[]
   confidence: number
+  embedding?: number[]
+  embeddingDimensions?: number
+  embeddingModel?: string
   createdAt: number
   updatedAt: number
 }

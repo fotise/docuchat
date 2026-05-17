@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react"
+import { useMemo, useState, type FormEvent, type ReactNode } from "react"
 import { ChevronDown, Heart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -40,6 +40,7 @@ export function Header({ workspace }: HeaderProps) {
   const [ragDebugContext, setRagDebugContext] = useState<RagRetrievalContext | null>(null)
   const [additionalQueries, setAdditionalQueries] = useState("")
   const [graphEntityQueries, setGraphEntityQueries] = useState("")
+  const [selectedGraphNode, setSelectedGraphNode] = useState("")
   const [targetDocumentNames, setTargetDocumentNames] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
@@ -67,6 +68,27 @@ export function Header({ workspace }: HeaderProps) {
   const childMatchLimit = workspace.ragSearchChildMatchLimit ?? 40
   const graphSearchDepth = workspace.graphSearchDepth ?? 1
   const parentChunkLimit = workspace.ragSearchParentChunkLimit ?? 10
+  const graphView = useMemo(() => {
+    const nodes = Array.from(
+      new Set(searchResults.flatMap((chunk) => chunk.graphEntityNames ?? []))
+    ).slice(0, 12)
+    const edges = searchResults.flatMap((chunk) => {
+      const names = chunk.graphEntityNames ?? []
+      const edgeType = chunk.graphEdgeTypes?.[0] ?? "related_to"
+
+      if (names.length < 2) {
+        return []
+      }
+
+      return names.slice(1).map((target) => ({
+        source: names[0],
+        target,
+        type: edgeType,
+      }))
+    })
+
+    return { edges, nodes }
+  }, [searchResults])
 
   function handleExploreClick() {
     setStatusMessage("Workspace explorer controls are not connected yet.")
@@ -123,6 +145,7 @@ export function Header({ workspace }: HeaderProps) {
 
       setRagDebugContext(context)
       setSearchResults(context.retrievedChunks)
+      setSelectedGraphNode("")
     } finally {
       setIsSearching(false)
     }
@@ -299,7 +322,7 @@ export function Header({ workspace }: HeaderProps) {
           aria-modal="true"
           aria-label="Semantic search"
         >
-          <div className="flex h-[80vh] max-h-[80vh] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
+          <div className="app-scrollbar flex h-[80vh] max-h-[80vh] w-full max-w-7xl flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
             <div className="border-b border-white/10 p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">
                 RAG search debugger
@@ -460,9 +483,135 @@ export function Header({ workspace }: HeaderProps) {
                   </div>
                 </div>
               ) : null}
+              <div className="mt-4 rounded-2xl border border-violet-300/15 bg-slate-950/20 p-3 text-xs text-slate-200">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-bold text-violet-100">Interactive graph view</p>
+                    <p className="text-slate-400">
+                      {graphView.nodes.length > 0
+                        ? "Click a node to highlight graph-derived evidence in the results."
+                        : "Run a Graph or Hybrid Graph RAG simulation to populate nodes and relationships."}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={graphView.nodes.length === 0}
+                    onClick={() => setSelectedGraphNode("")}
+                    className="h-8 rounded-xl border border-white/10 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/15 disabled:opacity-40"
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-[280px_1fr]">
+                  <div className="flex min-h-20 flex-wrap gap-2 rounded-xl border border-white/10 bg-slate-950/20 p-3">
+                    {graphView.nodes.length > 0 ? (
+                      graphView.nodes.map((node) => (
+                          <button
+                            key={node}
+                            type="button"
+                            aria-pressed={selectedGraphNode === node}
+                            onClick={() => setSelectedGraphNode(node)}
+                            className={`rounded-full border px-3 py-1 text-left transition ${
+                              selectedGraphNode === node
+                                ? "border-violet-200 bg-violet-400/30 text-white"
+                                : "border-white/10 bg-white/5 text-slate-200 hover:bg-white/10"
+                            }`}
+                          >
+                            {node}
+                          </button>
+                      ))
+                    ) : (
+                      <span className="self-center text-slate-400">
+                        No graph nodes yet.
+                      </span>
+                    )}
+                  </div>
+                  <svg
+                    className="h-32 w-full rounded-xl border border-white/10 bg-slate-950/30"
+                    role="img"
+                    aria-label="Graph RAG relationship visualization"
+                    viewBox="0 0 720 140"
+                  >
+                    {graphView.nodes.length === 0 ? (
+                      <text
+                        x="360"
+                        y="74"
+                        fill="#94a3b8"
+                        fontSize="14"
+                        textAnchor="middle"
+                      >
+                        No graph relationships to display yet
+                      </text>
+                    ) : (
+                      <>
+                        {graphView.edges.slice(0, 14).map((edge, index) => {
+                        const sourceIndex = graphView.nodes.indexOf(edge.source)
+                        const targetIndex = graphView.nodes.indexOf(edge.target)
+                        const sourceX = 48 + (sourceIndex % 6) * 118
+                        const sourceY = sourceIndex < 6 ? 38 : 102
+                        const targetX = 48 + (targetIndex % 6) * 118
+                        const targetY = targetIndex < 6 ? 38 : 102
+                        const isSelected = selectedGraphNode === edge.source || selectedGraphNode === edge.target
+
+                        return (
+                          <g key={`${edge.source}-${edge.target}-${index}`}>
+                            <line
+                              x1={sourceX}
+                              y1={sourceY}
+                              x2={targetX}
+                              y2={targetY}
+                              stroke={isSelected ? "#c4b5fd" : "#38bdf8"}
+                              strokeOpacity={isSelected ? 0.9 : 0.35}
+                              strokeWidth={isSelected ? 2.4 : 1.4}
+                            />
+                            <text
+                              x={(sourceX + targetX) / 2}
+                              y={(sourceY + targetY) / 2 - 4}
+                              fill="#bae6fd"
+                              fontSize="8"
+                              textAnchor="middle"
+                            >
+                              {edge.type}
+                            </text>
+                          </g>
+                        )
+                        })}
+                        {graphView.nodes.map((node, index) => {
+                        const x = 48 + (index % 6) * 118
+                        const y = index < 6 ? 38 : 102
+                        const isSelected = selectedGraphNode === node
+
+                        return (
+                          <g key={node}>
+                            <circle
+                              cx={x}
+                              cy={y}
+                              r={isSelected ? 18 : 14}
+                              fill={isSelected ? "#8b5cf6" : "#0f172a"}
+                              stroke={isSelected ? "#ddd6fe" : "#38bdf8"}
+                              strokeWidth="2"
+                            />
+                            <text
+                              x={x}
+                              y={y + 30}
+                              fill="#e0f2fe"
+                              fontSize="9"
+                              textAnchor="middle"
+                            >
+                              {node.length > 18 ? `${node.slice(0, 18)}…` : node}
+                            </text>
+                          </g>
+                        )
+                        })}
+                      </>
+                    )}
+                  </svg>
+                </div>
+              </div>
             </div>
 
-            <div className="app-scrollbar min-h-0 flex-1 overflow-auto p-5">
+            <div className="shrink-0 p-5">
               <div className="app-scrollbar overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/20">
                 <table
                   className="min-w-[1560px] table-fixed text-left text-xs"
@@ -493,7 +642,14 @@ export function Header({ workspace }: HeaderProps) {
                       </tr>
                     ) : searchResults.length > 0 ? (
                       searchResults.map((chunk) => (
-                        <tr key={chunk.parentChunkId} className="align-top text-slate-200">
+                        <tr
+                          key={chunk.parentChunkId}
+                          className={`align-top text-slate-200 ${
+                            selectedGraphNode && chunk.graphEntityNames?.includes(selectedGraphNode)
+                              ? "bg-violet-400/10"
+                              : ""
+                          }`}
+                        >
                           <td className="px-3 py-3 font-semibold text-emerald-100">
                             {formatScore(chunk.score)}
                           </td>
