@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   getDocumentChunks,
   type StoredDocumentChunk,
@@ -44,19 +45,57 @@ export function UploadedDocumentsCard({
 }: UploadedDocumentsCardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [statusMessage, setStatusMessage] = useState("")
+  const [activeChunkTab, setActiveChunkTab] = useState("parents")
   const [isConfirmingDelete, setIsConfirmingDelete] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
-  const [chunkPage, setChunkPage] = useState(1)
+  const [childChunkPage, setChildChunkPage] = useState(1)
   const [documentChunks, setDocumentChunks] = useState<StoredDocumentChunk[]>([])
   const [isLoadingChunks, setIsLoadingChunks] = useState(false)
+  const [parentChunkPage, setParentChunkPage] = useState(1)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const selectedDocument = documents.find(
     (document) => document.id === selectedDocumentId
   ) ?? null
-  const chunkPageCount = Math.max(1, Math.ceil(documentChunks.length / CHUNKS_PER_PAGE))
-  const paginatedChunks = useMemo(
-    () => documentChunks.slice((chunkPage - 1) * CHUNKS_PER_PAGE, chunkPage * CHUNKS_PER_PAGE),
-    [chunkPage, documentChunks]
+  const parentChunks = useMemo(
+    () => documentChunks.filter((chunk) => chunk.level === "parent"),
+    [documentChunks]
+  )
+  const childChunks = useMemo(
+    () => documentChunks.filter((chunk) => chunk.level === "child"),
+    [documentChunks]
+  )
+  const childCountByParentId = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const chunk of childChunks) {
+      if (chunk.parentChunkId) {
+        counts.set(chunk.parentChunkId, (counts.get(chunk.parentChunkId) ?? 0) + 1)
+      }
+    }
+
+    return counts
+  }, [childChunks])
+  const parentChunkPageCount = Math.max(
+    1,
+    Math.ceil(parentChunks.length / CHUNKS_PER_PAGE)
+  )
+  const childChunkPageCount = Math.max(
+    1,
+    Math.ceil(childChunks.length / CHUNKS_PER_PAGE)
+  )
+  const paginatedParentChunks = useMemo(
+    () => parentChunks.slice(
+      (parentChunkPage - 1) * CHUNKS_PER_PAGE,
+      parentChunkPage * CHUNKS_PER_PAGE
+    ),
+    [parentChunkPage, parentChunks]
+  )
+  const paginatedChildChunks = useMemo(
+    () => childChunks.slice(
+      (childChunkPage - 1) * CHUNKS_PER_PAGE,
+      childChunkPage * CHUNKS_PER_PAGE
+    ),
+    [childChunkPage, childChunks]
   )
 
   useEffect(() => {
@@ -102,10 +141,12 @@ export function UploadedDocumentsCard({
   }, [selectedDocument])
 
   function handleOpenDocument(documentId: string) {
+    setActiveChunkTab("parents")
     setSelectedDocumentId(documentId)
-    setChunkPage(1)
+    setChildChunkPage(1)
     setDocumentChunks([])
     setIsLoadingChunks(true)
+    setParentChunkPage(1)
   }
 
   function handleUploadClick() {
@@ -179,9 +220,11 @@ export function UploadedDocumentsCard({
     }
 
     await onReprocessDocument(selectedDocument.id)
-    setChunkPage(1)
+    setActiveChunkTab("parents")
+    setChildChunkPage(1)
     setDocumentChunks([])
     setIsLoadingChunks(false)
+    setParentChunkPage(1)
     setStatusMessage(`${selectedDocument.name} is queued for reprocessing.`)
   }
 
@@ -362,36 +405,36 @@ export function UploadedDocumentsCard({
                   <p className="mt-2 text-sm text-slate-300">
                     {formatFileSize(selectedDocument.size)}
                   </p>
-                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                  <dl className="mt-4 grid grid-cols-4 gap-2 text-xs">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
                         Chunks
                       </dt>
-                      <dd className="mt-1 font-bold text-slate-50">
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
                         {formatCount(selectedDocument.chunkCount)}
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
                         Pages
                       </dt>
-                      <dd className="mt-1 font-bold text-slate-50">
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
                         {formatCount(selectedDocument.pageCount)}
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
                         Parent chunks
                       </dt>
-                      <dd className="mt-1 font-bold text-slate-50">
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
                         {formatCount(selectedDocument.parentChunkCount)}
                       </dd>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-                      <dt className="text-xs uppercase tracking-[0.14em] text-sky-200/60">
+                    <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
+                      <dt className="truncate text-[10px] uppercase tracking-[0.1em] text-sky-200/60">
                         Child chunks
                       </dt>
-                      <dd className="mt-1 font-bold text-slate-50">
+                      <dd className="mt-1 truncate text-sm font-bold text-slate-50">
                         {formatCount(selectedDocument.childChunkCount)}
                       </dd>
                     </div>
@@ -399,118 +442,237 @@ export function UploadedDocumentsCard({
                 </div>
               </div>
 
-              <section className="mt-5 rounded-2xl border border-white/10 bg-slate-950/20" aria-label="Document chunks">
-                <div className="flex flex-col gap-3 border-b border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-slate-50">Chunks and embeddings</h3>
-                    <p className="mt-1 text-xs text-sky-200/70">
-                      Showing stored parent/child chunks, page references and embedding metadata.
-                    </p>
+              <section
+                className="mt-5 rounded-2xl border border-white/10 bg-slate-950/20"
+                aria-label="Document chunks"
+              >
+                <Tabs
+                  value={activeChunkTab}
+                  onValueChange={setActiveChunkTab}
+                  className="flex flex-col gap-0"
+                >
+                  <div className="flex flex-col gap-3 border-b border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-extrabold text-slate-50">
+                        Chunks and embeddings
+                      </h3>
+                      <p className="mt-1 text-xs text-sky-200/70">
+                        Parent chunks preserve page context; child chunks store embeddings.
+                      </p>
+                    </div>
+                    <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-none bg-transparent p-0 text-slate-200">
+                      <TabsTrigger
+                        value="parents"
+                        onClick={() => setActiveChunkTab("parents")}
+                        className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-blue-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-blue-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                      >
+                        Parent chunks ({parentChunks.length})
+                      </TabsTrigger>
+                      <TabsTrigger
+                        value="children"
+                        onClick={() => setActiveChunkTab("children")}
+                        className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-blue-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-blue-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                      >
+                        Chunks ({childChunks.length})
+                      </TabsTrigger>
+                    </TabsList>
                   </div>
-                  <p className="text-xs font-semibold text-slate-300" aria-live="polite">
-                    {documentChunks.length === 0
-                      ? "No chunks available"
-                      : `Page ${chunkPage} of ${chunkPageCount}`}
-                  </p>
-                </div>
 
-                <div className="app-scrollbar overflow-x-auto">
-                  <table className="min-w-[920px] table-fixed text-left text-xs" aria-label="Document chunks table">
-                    <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
-                      <tr>
-                        <th className="w-16 px-3 py-3 font-bold">#</th>
-                        <th className="w-20 px-3 py-3 font-bold">Level</th>
-                        <th className="w-28 px-3 py-3 font-bold">Pages</th>
-                        <th className="w-56 px-3 py-3 font-bold">Chunk ID</th>
-                        <th className="w-64 px-3 py-3 font-bold">Text preview</th>
-                        <th className="w-24 px-3 py-3 font-bold">Dims</th>
-                        <th className="w-56 px-3 py-3 font-bold">Embedding preview</th>
-                        <th className="w-48 px-3 py-3 font-bold">Model</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/10">
-                      {isLoadingChunks ? (
-                        <tr>
-                          <td className="px-3 py-5 text-center text-slate-300" colSpan={8}>
-                            Loading chunks…
-                          </td>
-                        </tr>
-                      ) : paginatedChunks.length > 0 ? (
-                        paginatedChunks.map((chunk) => (
-                          <tr key={chunk.id} className="align-top text-slate-200">
-                            <td className="px-3 py-3 font-semibold text-slate-100">{chunk.order + 1}</td>
-                            <td className="px-3 py-3 capitalize">
-                              <span className="rounded-full border border-white/10 bg-white/10 px-2 py-1">
-                                {chunk.level}
-                              </span>
-                            </td>
-                            <td className="px-3 py-3">{formatPageNumbers(chunk.pageNumbers)}</td>
-                            <td className="px-3 py-3 font-mono text-[11px] text-sky-100/90">
-                              <span className="line-clamp-2 break-all" title={chunk.chunkId}>
-                                {chunk.chunkId}
-                              </span>
-                              {chunk.parentChunkId ? (
-                                <span className="mt-1 block text-[10px] text-slate-400" title={chunk.parentChunkId}>
-                                  Parent: {chunk.parentChunkId}
-                                </span>
-                              ) : null}
-                            </td>
-                            <td className="px-3 py-3 text-slate-300" title={chunk.text}>
-                              {formatTextPreview(chunk.text)}
-                            </td>
-                            <td className="px-3 py-3">{chunk.embeddingDimensions ?? "—"}</td>
-                            <td className="px-3 py-3 font-mono text-[11px] text-emerald-100/90" title={chunk.embedding?.join(", ") ?? "No embedding"}>
-                              {formatEmbeddingPreview(chunk.embedding)}
-                            </td>
-                            <td className="px-3 py-3 text-slate-300">
-                              <span className="line-clamp-2 break-all" title={chunk.embeddingModel ?? "No embedding model"}>
-                                {chunk.embeddingModel ?? "—"}
-                              </span>
-                            </td>
+                  <TabsContent value="parents" className="m-0">
+                    <div className="app-scrollbar overflow-x-auto">
+                      <table
+                        className="min-w-[860px] table-fixed text-left text-xs"
+                        aria-label="Parent chunks table"
+                      >
+                        <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
+                          <tr>
+                            <th className="w-16 px-3 py-3 font-bold">#</th>
+                            <th className="w-28 px-3 py-3 font-bold">Pages</th>
+                            <th className="w-64 px-3 py-3 font-bold">Parent chunk ID</th>
+                            <th className="w-28 px-3 py-3 font-bold">Child count</th>
+                            <th className="w-24 px-3 py-3 font-bold">Chars</th>
+                            <th className="w-80 px-3 py-3 font-bold">Text preview</th>
                           </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td className="px-3 py-5 text-center text-slate-300" colSpan={8}>
-                            No stored chunks for this file yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody className="divide-y divide-white/10">
+                          {isLoadingChunks ? (
+                            <tr>
+                              <td className="px-3 py-5 text-center text-slate-300" colSpan={6}>
+                                Loading parent chunks…
+                              </td>
+                            </tr>
+                          ) : paginatedParentChunks.length > 0 ? (
+                            paginatedParentChunks.map((chunk) => (
+                              <tr key={chunk.id} className="align-top text-slate-200">
+                                <td className="px-3 py-3 font-semibold text-slate-100">
+                                  {chunk.order + 1}
+                                </td>
+                                <td className="px-3 py-3">
+                                  {formatPageNumbers(chunk.pageNumbers)}
+                                </td>
+                                <td className="px-3 py-3 font-mono text-[11px] text-sky-100/90">
+                                  <span className="line-clamp-2 break-all" title={chunk.chunkId}>
+                                    {chunk.chunkId}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3">
+                                  {childCountByParentId.get(chunk.chunkId) ?? 0}
+                                </td>
+                                <td className="px-3 py-3">{chunk.text.length}</td>
+                                <td className="px-3 py-3 text-slate-300" title={chunk.text}>
+                                  {formatTextPreview(chunk.text)}
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td className="px-3 py-5 text-center text-slate-300" colSpan={6}>
+                                No stored parent chunks for this file yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
 
-                <div className="flex flex-col gap-3 border-t border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs text-slate-300">
-                    {documentChunks.length > 0
-                      ? `Showing ${((chunkPage - 1) * CHUNKS_PER_PAGE) + 1}-${Math.min(chunkPage * CHUNKS_PER_PAGE, documentChunks.length)} of ${documentChunks.length} chunks`
-                      : "The table will populate after file processing completes."}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 sm:w-auto">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      aria-label="Previous chunks page"
-                      disabled={chunkPage <= 1 || documentChunks.length === 0}
-                      onClick={() => setChunkPage((page) => Math.max(1, page - 1))}
-                      className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
-                    >
-                      <ChevronLeft className="mr-2 h-4 w-4" />
-                      Previous
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      aria-label="Next chunks page"
-                      disabled={chunkPage >= chunkPageCount || documentChunks.length === 0}
-                      onClick={() => setChunkPage((page) => Math.min(chunkPageCount, page + 1))}
-                      className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
-                    >
-                      Next
-                      <ChevronRight className="ml-2 h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+                    <div className="flex flex-col gap-3 border-t border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-slate-300">
+                        {parentChunks.length > 0
+                          ? `Showing ${((parentChunkPage - 1) * CHUNKS_PER_PAGE) + 1}-${Math.min(parentChunkPage * CHUNKS_PER_PAGE, parentChunks.length)} of ${parentChunks.length} parent chunks`
+                          : "The table will populate after file processing completes."}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 sm:w-auto">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          aria-label="Previous parent chunks page"
+                          disabled={parentChunkPage <= 1 || parentChunks.length === 0}
+                          onClick={() => setParentChunkPage((page) => Math.max(1, page - 1))}
+                          className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
+                        >
+                          <ChevronLeft className="mr-2 h-4 w-4" />
+                          Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          aria-label="Next parent chunks page"
+                          disabled={parentChunkPage >= parentChunkPageCount || parentChunks.length === 0}
+                          onClick={() => setParentChunkPage((page) => Math.min(parentChunkPageCount, page + 1))}
+                          className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
+                        >
+                          Next
+                          <ChevronRight className="ml-2 h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="children" className="m-0">
+                    <div className="app-scrollbar overflow-x-auto">
+                      <table
+                        className="min-w-[980px] table-fixed text-left text-xs"
+                        aria-label="Child chunks table"
+                      >
+                        <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
+                          <tr>
+                            <th className="w-16 px-3 py-3 font-bold">#</th>
+                            <th className="w-28 px-3 py-3 font-bold">Pages</th>
+                            <th className="w-56 px-3 py-3 font-bold">Chunk ID</th>
+                            <th className="w-56 px-3 py-3 font-bold">Parent ID</th>
+                            <th className="w-64 px-3 py-3 font-bold">Text preview</th>
+                            <th className="w-24 px-3 py-3 font-bold">Dims</th>
+                            <th className="w-56 px-3 py-3 font-bold">Embedding preview</th>
+                            <th className="w-48 px-3 py-3 font-bold">Model</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/10">
+                          {isLoadingChunks ? (
+                            <tr>
+                              <td className="px-3 py-5 text-center text-slate-300" colSpan={8}>
+                                Loading chunks…
+                              </td>
+                            </tr>
+                          ) : paginatedChildChunks.length > 0 ? (
+                            paginatedChildChunks.map((chunk) => (
+                              <tr key={chunk.id} className="align-top text-slate-200">
+                                <td className="px-3 py-3 font-semibold text-slate-100">
+                                  {chunk.order + 1}
+                                </td>
+                                <td className="px-3 py-3">
+                                  {formatPageNumbers(chunk.pageNumbers)}
+                                </td>
+                                <td className="px-3 py-3 font-mono text-[11px] text-sky-100/90">
+                                  <span className="line-clamp-2 break-all" title={chunk.chunkId}>
+                                    {chunk.chunkId}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3 font-mono text-[11px] text-slate-400">
+                                  <span className="line-clamp-2 break-all" title={chunk.parentChunkId ?? "No parent"}>
+                                    {chunk.parentChunkId ?? "—"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3 text-slate-300" title={chunk.text}>
+                                  {formatTextPreview(chunk.text)}
+                                </td>
+                                <td className="px-3 py-3">{chunk.embeddingDimensions ?? "—"}</td>
+                                <td
+                                  className="px-3 py-3 font-mono text-[11px] text-emerald-100/90"
+                                  title={chunk.embedding?.join(", ") ?? "No embedding"}
+                                >
+                                  {formatEmbeddingPreview(chunk.embedding)}
+                                </td>
+                                <td className="px-3 py-3 text-slate-300">
+                                  <span className="line-clamp-2 break-all" title={chunk.embeddingModel ?? "No embedding model"}>
+                                    {chunk.embeddingModel ?? "—"}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td className="px-3 py-5 text-center text-slate-300" colSpan={8}>
+                                No stored chunks for this file yet.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex flex-col gap-3 border-t border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-xs text-slate-300">
+                        {childChunks.length > 0
+                          ? `Showing ${((childChunkPage - 1) * CHUNKS_PER_PAGE) + 1}-${Math.min(childChunkPage * CHUNKS_PER_PAGE, childChunks.length)} of ${childChunks.length} chunks`
+                          : "The table will populate after file processing completes."}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 sm:w-auto">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          aria-label="Previous chunks page"
+                          disabled={childChunkPage <= 1 || childChunks.length === 0}
+                          onClick={() => setChildChunkPage((page) => Math.max(1, page - 1))}
+                          className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
+                        >
+                          <ChevronLeft className="mr-2 h-4 w-4" />
+                          Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          aria-label="Next chunks page"
+                          disabled={childChunkPage >= childChunkPageCount || childChunks.length === 0}
+                          onClick={() => setChildChunkPage((page) => Math.min(childChunkPageCount, page + 1))}
+                          className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15 disabled:opacity-50"
+                        >
+                          Next
+                          <ChevronRight className="ml-2 h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </section>
             </div>
 

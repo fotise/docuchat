@@ -673,21 +673,70 @@ describe("App", () => {
     await replaceDocumentChunks(
       "market-research",
       uploadedDocument.id,
-      Array.from({ length: 12 }, (_, index) => ({
-        id: `delete-me:child:${index}`,
-        workspaceId: "market-research",
-        documentId: uploadedDocument.id,
-        chunkId: `delete-me:child:${index}`,
-        parentChunkId: "delete-me:parent:0",
-        level: "child" as const,
-        text: `Chunk ${index + 1} text about market retention and revenue.`,
-        pageNumbers: [Math.floor(index / 4) + 1],
-        embedding: [index, index + 0.25, index + 0.5, index + 0.75, index + 1],
-        embeddingDimensions: 5,
-        embeddingModel: "test-embedding-model",
-        order: index,
-        createdAt: Date.now() + index,
-      }))
+      [
+        {
+          id: "delete-me:parent:0",
+          workspaceId: "market-research",
+          documentId: uploadedDocument.id,
+          chunkId: "delete-me:parent:0",
+          level: "parent" as const,
+          text: "Parent chunk 1 joins market retention and revenue context.",
+          pageNumbers: [1, 2],
+          order: 0,
+          createdAt: Date.now(),
+        },
+        ...Array.from({ length: 6 }, (_, index) => ({
+          id: `delete-me:child:${index}`,
+          workspaceId: "market-research",
+          documentId: uploadedDocument.id,
+          chunkId: `delete-me:child:${index}`,
+          parentChunkId: "delete-me:parent:0",
+          level: "child" as const,
+          text: `Chunk ${index + 1} text about market retention and revenue.`,
+          pageNumbers: [Math.floor(index / 4) + 1],
+          embedding: [index, index + 0.25, index + 0.5, index + 0.75, index + 1],
+          embeddingDimensions: 5,
+          embeddingModel: "test-embedding-model",
+          order: index + 1,
+          createdAt: Date.now() + index + 1,
+        })),
+        {
+          id: "delete-me:parent:1",
+          workspaceId: "market-research",
+          documentId: uploadedDocument.id,
+          chunkId: "delete-me:parent:1",
+          level: "parent" as const,
+          text: "Parent chunk 2 joins expansion, churn, and planning context.",
+          pageNumbers: [3],
+          order: 7,
+          createdAt: Date.now() + 7,
+        },
+        ...Array.from({ length: 6 }, (_, index) => {
+          const childIndex = index + 6
+
+          return {
+            id: `delete-me:child:${childIndex}`,
+            workspaceId: "market-research",
+            documentId: uploadedDocument.id,
+            chunkId: `delete-me:child:${childIndex}`,
+            parentChunkId: "delete-me:parent:1",
+            level: "child" as const,
+            text: `Chunk ${childIndex + 1} text about market retention and revenue.`,
+            pageNumbers: [3],
+            embedding: [
+              childIndex,
+              childIndex + 0.25,
+              childIndex + 0.5,
+              childIndex + 0.75,
+              childIndex + 1,
+            ],
+            embeddingDimensions: 5,
+            embeddingModel: "test-embedding-model",
+            order: childIndex + 2,
+            createdAt: Date.now() + childIndex + 2,
+          }
+        }),
+      ]
     )
 
     fireEvent.click(await screen.findByRole("button", { name: "Open details for Delete_Me.pdf" }))
@@ -699,7 +748,16 @@ describe("App", () => {
     expect(screen.getByText("Chunks")).toBeTruthy()
     expect(screen.getAllByText("Unavailable")).not.toHaveLength(0)
 
-    expect(await screen.findByRole("table", { name: "Document chunks table" })).toBeTruthy()
+    expect(await screen.findByRole("tab", { name: "Parent chunks (2)" })).toBeTruthy()
+    expect(screen.getByRole("tab", { name: "Chunks (12)" })).toBeTruthy()
+    expect(await screen.findByRole("table", { name: "Parent chunks table" })).toBeTruthy()
+    expect(screen.getByText("delete-me:parent:0")).toBeTruthy()
+    expect(screen.getByText("delete-me:parent:1")).toBeTruthy()
+    expect(screen.getAllByText("6")).not.toHaveLength(0)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Chunks (12)" }))
+
+    expect(await screen.findByRole("table", { name: "Child chunks table" })).toBeTruthy()
     expect(await screen.findByText("Showing 1-10 of 12 chunks")).toBeTruthy()
     expect(screen.getByText("delete-me:child:0")).toBeTruthy()
     expect(screen.getByText("delete-me:child:9")).toBeTruthy()
