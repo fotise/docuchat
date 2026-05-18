@@ -131,12 +131,27 @@ function getRetrievalMode(result: GenerateRetrievalQueryResult, prompt: string):
   return result.retrievalMode ?? inferRetrievalMode(prompt)
 }
 
+const PLANNER_PLACEHOLDER_VALUES = new Set([
+  "alternate query with synonyms or resolved references",
+  "entity or topic names for graph traversal",
+  "optional exact file names mentioned by the user",
+  "primary standalone retrieval query",
+  "short resolved follow up references",
+  "short resolved follow-up references",
+])
+
+function isMeaningfulPlannerValue(value: string) {
+  const normalized = value.trim().toLowerCase()
+
+  return normalized.length > 0 && !PLANNER_PLACEHOLDER_VALUES.has(normalized)
+}
+
 function getSearchQueries(result: GenerateRetrievalQueryResult, prompt: string) {
   return Array.from(
     new Set(
       [result.searchQuery, ...(result.searchQueries ?? []), prompt]
         .map((query) => query.trim())
-        .filter(Boolean)
+        .filter(isMeaningfulPlannerValue)
     )
   )
 }
@@ -267,7 +282,28 @@ function mergeRetrievedChunks(
     })
   }
 
-  return Array.from(mergedByParentId.values()).sort((left, right) => right.score - left.score)
+  const hasSemanticEvidence = semanticChunks.length > 0
+  const sourcePriority = (chunk: NonNullable<GenerateReplyInput["retrievedChunks"]>[number]) => {
+    if (!hasSemanticEvidence) {
+      return 0
+    }
+
+    if (chunk.retrievalSource === "hybrid") {
+      return 2
+    }
+
+    if (chunk.retrievalSource === "semantic" || !chunk.retrievalSource) {
+      return 1
+    }
+
+    return 0
+  }
+
+  return Array.from(mergedByParentId.values()).sort((left, right) => {
+    const priorityDifference = sourcePriority(right) - sourcePriority(left)
+
+    return priorityDifference !== 0 ? priorityDifference : right.score - left.score
+  })
 }
 
 function waitForUiFrame() {
@@ -346,10 +382,10 @@ export async function generateRagRetrievalContext({
       ? targetDocumentNames
       : [...(retrievalQueryResult.targetDocumentNames ?? []), ...targetDocumentNames]
     )
-  )
+  ).filter(isMeaningfulPlannerValue)
   const graphQueries = Array.from(
     new Set([...(retrievalQueryResult.graphEntities ?? []), ...graphEntityQueries, ...searchQueries])
-  )
+  ).filter(isMeaningfulPlannerValue)
   let retrievedChunks: GenerateReplyInput["retrievedChunks"] = []
   let retrievalError: string | undefined
   let semanticChunkCount = 0

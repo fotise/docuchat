@@ -1237,6 +1237,66 @@ describe("App", () => {
     })
   })
 
+  it("prioritizes semantic and hybrid evidence above graph-only chunks in hybrid graph retrieval", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "what are main steps of service management process",
+      messages: [],
+      llmClient: {
+        id: "hybrid-ranking-test-llm",
+        label: "Hybrid Ranking Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          graphEntities: ["service management process"],
+          intent: "Explain service management steps.",
+          needsDocumentSearch: true,
+          retrievalMode: "hybrid_graph",
+          searchQuery: "service management process steps",
+        }),
+        generateReply: async () => "not used",
+      },
+      retrieveParentChunks: async () => [
+        {
+          documentId: "service-doc",
+          documentName: "Service Management Process.pdf",
+          matchedChildChunkIds: ["child-service"],
+          matchedQueries: ["service management process steps"],
+          pageNumbers: [13],
+          parentChunkId: "parent-service",
+          retrievalSource: "semantic",
+          score: 0.62,
+          similarity: 0.7,
+          text: "Validate the service set-up request, create or modify service, assess security, approve support, monitor health.",
+        },
+      ],
+      retrieveGraphContext: async () => [
+        {
+          documentId: "architecture-doc",
+          matchedChildChunkIds: ["child-process"],
+          matchedQueries: ["PROCESS"],
+          pageNumbers: [9],
+          parentChunkId: "parent-generic-process",
+          retrievalSource: "graph",
+          score: 1,
+          similarity: 1,
+          text: "The process focuses on architecture engagement, development and review.",
+        },
+      ],
+    })
+
+    expect(context.retrievedChunks).toHaveLength(2)
+    expect(context.retrievedChunks[0]).toMatchObject({
+      parentChunkId: "parent-service",
+      retrievalSource: "semantic",
+    })
+    expect(context.retrievedChunks[1]).toMatchObject({
+      parentChunkId: "parent-generic-process",
+      retrievalSource: "graph",
+    })
+  })
+
   it("generates a retrieval query before answering chat with parent chunks", async () => {
     let retrievalQueryInput: GenerateReplyInput | null = null
     let finalReplyInput: GenerateReplyInput | null = null
@@ -2503,6 +2563,8 @@ describe("App", () => {
     expect(promptPayload).toContain("Current user request — answer this request now")
     expect(promptPayload).toContain("Conversation context for continuity and reference:")
     expect(promptPayload).toContain("Conversation so far: none")
+    expect(promptPayload).toContain("Retrieved parent chunks: none.")
+    expect(promptPayload).toContain("For questions asking for main steps, phases, activities, or process flow")
     expect(promptPayload).toContain("Summarize the files")
     expect(debugPromptEvents[0]).toMatchObject({
       clientId: "chrome-local-llm",
@@ -2596,6 +2658,44 @@ describe("App", () => {
 
     expect(result?.retrievalMode).toBeUndefined()
     expect(result?.searchQuery).toBe("retention evidence")
+  })
+
+  it("filters copied placeholder values from Chrome local LLM planning", async () => {
+    window.LanguageModel = {
+      availability: async () => "available",
+      create: async () => ({
+        prompt: async () => JSON.stringify({
+          intent: "short intent",
+          retrievalMode: "semantic",
+          needsDocumentSearch: true,
+          searchQuery: "primary standalone retrieval query",
+          searchQueries: [
+            "primary standalone retrieval query",
+            "alternate query with synonyms or resolved references",
+            "service management process steps",
+          ],
+          targetDocumentNames: ["optional exact file names mentioned by the user", ""],
+          resolvedReferences: ["short resolved follow-up references"],
+          graphEntities: ["entity or topic names for graph traversal", "service management process"],
+          graphDepth: 1,
+        }),
+      }),
+    }
+
+    const client = createChromeLocalLlmClient()
+    const result = await client.generateRetrievalQuery?.({
+      workspaceTitle: "Research Hub",
+      tabLabel: "General Chat",
+      documents: [],
+      prompt: "what are main steps of service management process",
+      messages: [],
+    })
+
+    expect(result?.searchQuery).toBe("what are main steps of service management process")
+    expect(result?.searchQueries).toEqual(["service management process steps"])
+    expect(result?.targetDocumentNames).toEqual([])
+    expect(result?.resolvedReferences).toEqual([])
+    expect(result?.graphEntities).toEqual(["service management process"])
   })
 
   it("creates a new workspace", async () => {

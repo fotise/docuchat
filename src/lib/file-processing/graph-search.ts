@@ -39,6 +39,7 @@ export interface GraphSearchResult {
 
 const STOP_WORDS = new Set([
   "and",
+  "between",
   "che",
   "con",
   "dei",
@@ -47,10 +48,27 @@ const STOP_WORDS = new Set([
   "for",
   "gli",
   "how",
+  "main",
   "nel",
   "per",
+  "related",
+  "relationship",
+  "steps",
   "the",
   "what",
+])
+
+const GENERIC_SINGLE_TOKEN_ENTITIES = new Set([
+  "document",
+  "documents",
+  "input",
+  "inputs",
+  "list",
+  "output",
+  "outputs",
+  "process",
+  "requirements",
+  "table",
 ])
 
 function normalizeGraphText(value: string) {
@@ -126,13 +144,32 @@ function scoreEntity(query: string, entity: StoredGraphEntity) {
     return 0
   }
 
-  const exactName = names.find((name) => queryTokens.join(" ").includes(name) || name.includes(queryTokens.join(" ")))
+  const queryPhrase = queryTokens.join(" ")
+  const exactName = names.find((name) => {
+    const nameTokens = Array.from(new Set(tokenize(name)))
+
+    if (nameTokens.length === 0) {
+      return false
+    }
+
+    return name === queryPhrase
+      || queryPhrase === name
+      || (nameTokens.length > 1 && (queryPhrase.includes(name) || name.includes(queryPhrase)))
+  })
 
   if (exactName) {
     return 1
   }
 
-  const matchedTokens = queryTokens.filter((token) => names.some((name) => name.includes(token)))
+  const matchedTokens = queryTokens.filter((token) => names.some((name) => {
+    const nameTokens = tokenize(name)
+
+    if (nameTokens.length === 1 && GENERIC_SINGLE_TOKEN_ENTITIES.has(nameTokens[0]) && queryTokens.length > 1) {
+      return false
+    }
+
+    return nameTokens.includes(token)
+  }))
 
   return matchedTokens.length / queryTokens.length
 }

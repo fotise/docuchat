@@ -126,6 +126,27 @@ function getDocumentStatusLabel(status: GenerateReplyInput["documents"][number][
   return "processed"
 }
 
+const RETRIEVAL_PLACEHOLDER_VALUES = new Set([
+  "alternate query with synonyms or resolved references",
+  "entity or topic names for graph traversal",
+  "optional exact file names mentioned by the user",
+  "primary standalone retrieval query",
+  "short resolved follow up references",
+  "short resolved follow-up references",
+])
+
+function isMeaningfulPlannerText(value: string) {
+  const normalized = value.trim().toLowerCase()
+
+  return normalized.length > 0 && !RETRIEVAL_PLACEHOLDER_VALUES.has(normalized)
+}
+
+function truncateForPrompt(value: string, maxLength = 1_200) {
+  const normalized = value.replace(/\s+/g, " ").trim()
+
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trim()}…` : normalized
+}
+
 function buildDocumentContext(documents: GenerateReplyInput["documents"]) {
   if (documents.length === 0) {
     return "Workspace files count: 0.\nWorkspace files: none."
@@ -152,25 +173,21 @@ function buildRetrievedContext({ retrievedChunks }: GenerateReplyInput) {
   const chunkLines = retrievedChunks.map((chunk, index) => {
     const pages = chunk.pageNumbers.length > 0 ? chunk.pageNumbers.join(", ") : "unknown"
     const source = chunk.documentName ?? chunk.documentId
+    const excerpt = truncateForPrompt(chunk.excerpt ?? chunk.text)
 
     return [
-      `Parent chunk ${index + 1}`,
+      `Evidence chunk ${index + 1}`,
       `Source: ${source}`,
       `Pages: ${pages}`,
-      `Similarity: ${chunk.similarity.toFixed(3)}`,
-      chunk.matchedQueries?.length ? `Matched queries: ${chunk.matchedQueries.join(" | ")}` : undefined,
-      `Matched child chunks: ${chunk.matchedChildChunkIds.join(", ")}`,
-      chunk.keywordScore !== undefined ? `Keyword score: ${chunk.keywordScore.toFixed(3)}` : undefined,
-      chunk.sourceScore !== undefined && chunk.sourceScore > 0 ? `Source match score: ${chunk.sourceScore.toFixed(3)}` : undefined,
       chunk.retrievalSource ? `Retrieval source: ${chunk.retrievalSource}` : undefined,
-      chunk.graphEntityNames?.length ? `Graph entities: ${chunk.graphEntityNames.join(", ")}` : undefined,
-      chunk.graphEdgeTypes?.length ? `Graph edge types: ${chunk.graphEdgeTypes.join(", ")}` : undefined,
-      `Relevant excerpt:\n${chunk.excerpt ?? chunk.text}`,
+      chunk.matchedQueries?.length ? `Matched queries: ${chunk.matchedQueries.join(" | ")}` : undefined,
+      `Relevant excerpt:\n${excerpt}`,
     ].filter(Boolean).join("\n")
   })
 
   return [
-    "Retrieved parent chunks from semantic search:",
+    "Retrieved parent chunks used as evidence:",
+    "Use the excerpts below as the source of truth. The most relevant evidence is listed first.",
     ...chunkLines,
   ].join("\n\n")
 }
@@ -186,6 +203,7 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
     "Use the workspace files list to understand what evidence may be available.",
     "When retrieved parent chunks are provided, use them as the primary evidence for document-content questions. Cite file names and pages when available.",
     "Every factual claim about document contents must be supported by retrieved evidence. Use citations like [File.pdf, p. 3] when pages are available.",
+    "For questions asking for main steps, phases, activities, or process flow, extract the answer from evidence phrases like 'composed of following activities', 'process diagram', and activity/task lists; answer as a concise numbered or bulleted list.",
     "Never treat the file list as evidence of file contents. The file list only proves inventory, names, types, sizes, and processing status.",
     "If retrieved chunks are weak, partial, or unrelated, say so briefly and answer only from reliable context or ask a focused follow-up question.",
     "When graph context is present, use it to reason about relationships and cross-document links, but ground every factual answer in the retrieved evidence excerpts.",
@@ -214,7 +232,7 @@ function buildPrompt(input: GenerateReplyInput) {
     input.retrievalIntent ? `Detected user intent:\n${input.retrievalIntent}` : "Detected user intent: not provided",
     input.retrievalMode ? `Retrieval mode:\n${input.retrievalMode}` : "Retrieval mode: not provided",
     input.retrievalConfidence ? `Retrieval confidence:\n${input.retrievalConfidence}` : "Retrieval confidence: not provided",
-    input.retrievalQuery ? `Semantic retrieval query used for evidence:\n${input.retrievalQuery}` : "Semantic retrieval query used for evidence: none",
+    input.retrievalQuery ? `Retrieval query used for evidence:\n${input.retrievalQuery}` : "Retrieval query used for evidence: none",
     input.retrievalRationale ? `Retrieval rationale:\n${input.retrievalRationale}` : "Retrieval rationale: not provided",
     buildRetrievedContext(input),
     "Current user request — answer this request now. Preserve conversation context, but prioritize this latest request:",
@@ -237,6 +255,7 @@ function buildRetrievalQueryPrompt({ prompt, messages, workspaceTitle, tabLabel 
     `Latest user question:\n${prompt}`,
     "Return only strict JSON with these fields:",
     `{"intent":"short intent","retrievalMode":"semantic","needsDocumentSearch":true,"searchQuery":"primary standalone retrieval query","searchQueries":["primary standalone retrieval query","alternate query with synonyms or resolved references"],"targetDocumentNames":["optional exact file names mentioned by the user"],"resolvedReferences":["short resolved follow-up references"],"graphEntities":["entity or topic names for graph traversal"],"graphDepth":1,"rationale":"short rationale"}`,
+    "Replace every placeholder with real values from the user question. Never copy placeholder text such as 'primary standalone retrieval query' or 'alternate query with synonyms or resolved references'. Use [] for targetDocumentNames and resolvedReferences when none are explicitly present.",
     "The searchQuery must be standalone: rewrite vague follow-ups like 'and that one?' using the relevant entities from the conversation.",
     "Use retrievalMode one of: none, inventory, semantic, targeted_file, summary, graph, hybrid_graph.",
     "Use graph for relationship-only questions about entities, dependencies, links, or co-occurrence.",
@@ -264,25 +283,26 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
   try {
     const parsed = JSON.parse(jsonMatch[0]) as Partial<GenerateRetrievalQueryResult>
     const searchQueries = Array.isArray(parsed.searchQueries)
-      ? parsed.searchQueries.filter((query): query is string => typeof query === "string")
+      ? parsed.searchQueries.filter((query): query is string => typeof query === "string" && isMeaningfulPlannerText(query))
       : undefined
     const targetDocumentNames = Array.isArray(parsed.targetDocumentNames)
-      ? parsed.targetDocumentNames.filter((name): name is string => typeof name === "string")
+      ? parsed.targetDocumentNames.filter((name): name is string => typeof name === "string" && isMeaningfulPlannerText(name))
       : undefined
     const resolvedReferences = Array.isArray(parsed.resolvedReferences)
-      ? parsed.resolvedReferences.filter((reference): reference is string => typeof reference === "string")
+      ? parsed.resolvedReferences.filter((reference): reference is string => typeof reference === "string" && isMeaningfulPlannerText(reference))
       : undefined
     const graphEntities = Array.isArray(parsed.graphEntities)
-      ? parsed.graphEntities.filter((entity): entity is string => typeof entity === "string")
+      ? parsed.graphEntities.filter((entity): entity is string => typeof entity === "string" && isMeaningfulPlannerText(entity))
       : undefined
+    const searchQuery = typeof parsed.searchQuery === "string" && isMeaningfulPlannerText(parsed.searchQuery)
+      ? parsed.searchQuery
+      : fallbackPrompt
 
     return {
       intent: typeof parsed.intent === "string" ? parsed.intent : "Answer the latest user question.",
       retrievalMode: parseRetrievalMode(parsed.retrievalMode),
       needsDocumentSearch: typeof parsed.needsDocumentSearch === "boolean" ? parsed.needsDocumentSearch : true,
-      searchQuery: typeof parsed.searchQuery === "string" && parsed.searchQuery.trim().length > 0
-        ? parsed.searchQuery
-        : fallbackPrompt,
+      searchQuery,
       searchQueries,
       targetDocumentNames,
       resolvedReferences,
