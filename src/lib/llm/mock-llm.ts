@@ -8,5 +8,13 @@ export function createMockLlmClient(): LlmClient {
     isAvailable: async () => true,
     generateReply: async ({ workspaceTitle, tabLabel, prompt }) =>
       buildAssistantReply({ workspaceTitle, tabLabel, prompt }),
+    streamReply: async function* ({ workspaceTitle, tabLabel, prompt }) {
+      const reply = buildAssistantReply({ workspaceTitle, tabLabel, prompt })
+      const chunks = reply.match(/\S+\s*/g) ?? [reply]
+
+      for (const chunk of chunks) {
+        yield chunk
+      }
+    },
   }
 }

@@ -2090,6 +2090,19 @@ describe("App", () => {
     })
   })
 
+  it("shows dynamic chat progress instead of the old static typing text", async () => {
+    renderApp()
+
+    fireEvent.change(await screen.findByPlaceholderText("Ask something about your documents..."), {
+      target: { value: "Check dynamic status" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+
+    expect(await screen.findByText(/Preparing your request|Planning document retrieval|Retrieving context|Composing the answer|Streaming the answer/)).toBeTruthy()
+    expect(screen.queryByText("Analyzing your request...")).toBeNull()
+    expect(await screen.findByText("Test LLM reply for: Check dynamic status")).toBeTruthy()
+  })
+
   it("renders LLM replies as markdown", async () => {
     renderApp()
 

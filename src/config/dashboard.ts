@@ -19,7 +19,6 @@ export const dashboardConfig = {
     uploadedDocumentsTitle: "Uploaded Documents",
     inputPlaceholder: "Ask something about your documents...",
     sendButton: "Send",
-    assistantTyping: "Analyzing your request...",
     pageNotFoundTitle: "Workspace not found",
     pageNotFoundDescription: "The requested page does not exist or the route is invalid.",
   },

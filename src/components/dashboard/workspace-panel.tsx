@@ -40,6 +40,8 @@ function createMessage(side: "left" | "right", text: string): WorkspaceMessage {
 
 export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const [inputValue, setInputValue] = useState("")
+  const [assistantProgressMessage, setAssistantProgressMessage] = useState("")
+  const [streamingAssistantMessage, setStreamingAssistantMessage] = useState("")
   const abortControllersRef = useRef<AbortController[]>([])
   const llmClient = useLlmClient()
   const chatTabs = useDashboardStore(
@@ -119,6 +121,10 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
 
   const currentMessages = storedMessages ?? (isChatCleared ? [] : currentView?.initialMessages ?? [])
   const isSendDisabled = inputValue.trim().length === 0 || isReplying
+  const isAssistantWorking = isReplying || Boolean(assistantProgressMessage) || Boolean(streamingAssistantMessage)
+  const replyingStatusMessage = streamingAssistantMessage
+    ? assistantProgressMessage || "Streaming the answer…"
+    : assistantProgressMessage || "Preparing your request…"
 
   useEffect(() => {
     let isMounted = true
@@ -171,6 +177,8 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     setMessages(workspace.id, activeTab, [])
     markChatCleared(workspace.id, activeTab)
     setReplying(workspace.id, activeTab, false)
+    setAssistantProgressMessage("")
+    setStreamingAssistantMessage("")
     await clearWorkspaceTabMessages(workspace.id, activeTab)
   }
 
@@ -185,6 +193,8 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     const tabLabelAtSend = activeTabLabel
     const userMessage = createMessage("left", trimmed)
 
+    setAssistantProgressMessage("Preparing your request…")
+    setStreamingAssistantMessage("")
     addMessage(workspace.id, tabIdAtSend, userMessage)
     void addChatMessage(
       createStoredChatMessage(workspace.id, tabIdAtSend, userMessage)
@@ -202,11 +212,14 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
         tabLabel: tabLabelAtSend,
         messages: currentMessages,
         llmClient,
+        onProgress: setAssistantProgressMessage,
+        onToken: setStreamingAssistantMessage,
         signal: abortController.signal,
       })
 
       const assistantMessage = createMessage("right", assistantText)
 
+      setAssistantProgressMessage("Saving the answer…")
       addMessage(workspace.id, tabIdAtSend, assistantMessage)
       await addChatMessage(
         createStoredChatMessage(workspace.id, tabIdAtSend, assistantMessage)
@@ -233,6 +246,8 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
       )
 
       if (!abortController.signal.aborted) {
+        setStreamingAssistantMessage("")
+        setAssistantProgressMessage("")
         setReplying(workspace.id, tabIdAtSend, false)
       }
     }
@@ -267,9 +282,20 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
           </MessageBubble>
         ))}
 
-        {isReplying ? (
+        {isAssistantWorking ? (
           <MessageBubble side="right">
-            {dashboardConfig.labels.assistantTyping}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-[0.12em] text-sky-100/80">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-sky-100" />
+                <span>{replyingStatusMessage}</span>
+              </div>
+              {streamingAssistantMessage ? (
+                <div className="whitespace-pre-wrap text-sm font-medium leading-6 text-white">
+                  {streamingAssistantMessage}
+                  <span className="ml-1 animate-pulse">▍</span>
+                </div>
+              ) : null}
+            </div>
           </MessageBubble>
         ) : null}
 

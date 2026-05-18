@@ -42,5 +42,24 @@ export function createDefaultLlmClient(): LlmClient {
 
       return mockLlm.generateReply(input)
     },
+    streamReply: async function* (input) {
+      try {
+        if (await chromeLocalLlm.isAvailable() && chromeLocalLlm.streamReply) {
+          yield* chromeLocalLlm.streamReply(input)
+          return
+        }
+      } catch (error) {
+        if (input.signal?.aborted) {
+          throw error
+        }
+      }
+
+      if (mockLlm.streamReply) {
+        yield* mockLlm.streamReply(input)
+        return
+      }
+
+      yield await mockLlm.generateReply(input)
+    },
   }
 }

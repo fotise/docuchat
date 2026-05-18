@@ -67,4 +67,5 @@ export interface LlmClient {
     input: GenerateRetrievalQueryInput
   ) => Promise<GenerateRetrievalQueryResult>
   generateReply: (input: GenerateReplyInput) => Promise<string>
+  streamReply?: (input: GenerateReplyInput) => AsyncIterable<string>
 }

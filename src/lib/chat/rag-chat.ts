@@ -16,6 +16,8 @@ interface GenerateRagReplyInput {
   prompt: string
   messages: WorkspaceMessage[]
   llmClient: LlmClient
+  onProgress?: (message: string) => void
+  onToken?: (partialText: string) => void
   retrieveGraphContext?: typeof retrieveGraphContextForWorkspace
   retrieveParentChunks?: typeof retrieveParentChunksForWorkspace
   signal?: AbortSignal
@@ -207,6 +209,12 @@ function mergeRetrievedChunks(
   return Array.from(mergedByParentId.values()).sort((left, right) => right.score - left.score)
 }
 
+function waitForUiFrame() {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0)
+  })
+}
+
 export async function generateRagRetrievalContext({
   workspace,
   tabLabel,
@@ -215,6 +223,7 @@ export async function generateRagRetrievalContext({
   llmClient,
   retrieveGraphContext = retrieveGraphContextForWorkspace,
   retrieveParentChunks = retrieveParentChunksForWorkspace,
+  onProgress,
   additionalQueries = [],
   childMatchLimit,
   graphDepth,
@@ -224,6 +233,7 @@ export async function generateRagRetrievalContext({
   signal,
 }: GenerateRagRetrievalContextInput): Promise<RagRetrievalContext> {
   const conversationMessages = ensureLatestUserMessage(messages, prompt)
+  onProgress?.("Preparing your request…")
   const baseInput: GenerateReplyInput = {
     workspaceTitle: workspace.title,
     tabLabel,
@@ -235,6 +245,7 @@ export async function generateRagRetrievalContext({
   let retrievalQueryResult: GenerateRetrievalQueryResult
 
   try {
+    onProgress?.("Planning document retrieval…")
     retrievalQueryResult = llmClient.generateRetrievalQuery
       ? await llmClient.generateRetrievalQuery(baseInput)
       : createFallbackRetrievalQuery(baseInput)
@@ -265,6 +276,12 @@ export async function generateRagRetrievalContext({
     try {
       const shouldUseSemantic = retrievalMode !== "graph"
       const shouldUseGraph = retrievalMode === "graph" || retrievalMode === "hybrid_graph"
+      const retrievalSteps = [
+        shouldUseSemantic ? "semantic search" : undefined,
+        shouldUseGraph ? "graph traversal" : undefined,
+      ].filter(Boolean).join(" and ")
+
+      onProgress?.(`Retrieving context with ${retrievalSteps}…`)
       const [semanticChunks, graphChunks] = await Promise.all([
         shouldUseSemantic
           ? retrieveParentChunks(workspace.id, retrievalQuery, {
@@ -289,13 +306,23 @@ export async function generateRagRetrievalContext({
         0,
         parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10
       )
+      onProgress?.(
+        retrievedChunks.length > 0
+          ? `Found ${retrievedChunks.length} relevant context ${retrievedChunks.length === 1 ? "chunk" : "chunks"}.`
+          : "No strong document context found; preparing a transparent answer…"
+      )
     } catch (error) {
       if (signal?.aborted) {
         throw error
       }
 
       retrievalError = error instanceof Error ? error.message : "Document retrieval failed."
+      onProgress?.("Retrieval had an issue; continuing with available context…")
     }
+  } else if (retrievalMode === "inventory") {
+    onProgress?.("Using workspace file inventory…")
+  } else {
+    onProgress?.("No document retrieval needed for this turn…")
   }
 
   return {
@@ -321,7 +348,7 @@ export async function generateRagReply(input: GenerateRagReplyInput): Promise<st
     retrievedChunks,
   } = await generateRagRetrievalContext(input)
 
-  return input.llmClient.generateReply({
+  const replyInput = {
     ...baseInput,
     retrievalIntent: retrievalQueryResult.intent,
     retrievalMode,
@@ -329,5 +356,30 @@ export async function generateRagReply(input: GenerateRagReplyInput): Promise<st
     retrievalRationale: retrievalQueryResult.rationale,
     retrievalConfidence,
     retrievedChunks,
-  })
+  }
+
+  input.onProgress?.("Composing the answer…")
+
+  if (input.llmClient.streamReply) {
+    let reply = ""
+    let hasStartedStreaming = false
+
+    for await (const chunk of input.llmClient.streamReply(replyInput)) {
+      if (!hasStartedStreaming) {
+        input.onProgress?.("Streaming the answer…")
+        hasStartedStreaming = true
+      }
+
+      reply = chunk.startsWith(reply) ? chunk : `${reply}${chunk}`
+      input.onToken?.(reply)
+      await waitForUiFrame()
+    }
+
+    return reply
+  }
+
+  const reply = await input.llmClient.generateReply(replyInput)
+  input.onToken?.(reply)
+
+  return reply
 }

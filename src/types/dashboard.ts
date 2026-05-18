@@ -32,7 +32,6 @@ export interface LabelsConfig {
   uploadedDocumentsTitle: string
   inputPlaceholder: string
   sendButton: string
-  assistantTyping: string
   pageNotFoundTitle: string
   pageNotFoundDescription: string
 }

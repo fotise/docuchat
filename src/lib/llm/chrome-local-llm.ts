@@ -26,6 +26,12 @@ interface ChromeLanguageModelSession {
       signal?: AbortSignal
     }
   ) => Promise<string>
+  promptStreaming?: (
+    input: string,
+    options?: {
+      signal?: AbortSignal
+    }
+  ) => AsyncIterable<string> | ReadableStream<string> | Promise<AsyncIterable<string> | ReadableStream<string>>
   destroy?: () => void
 }
 
@@ -188,7 +194,8 @@ function buildSystemPrompt({ workspaceTitle, tabLabel, documents }: GenerateRepl
     "For file inventory questions, such as how many files exist, file names, types, sizes, or processing status, answer directly from the workspace files list without asking for document contents.",
     "Prefer processed files. If a file is still processing or waiting to be processed, say that its contents may not be available yet.",
     "If the answer cannot be supported by the available workspace context, say what is missing instead of inventing details.",
-    "Answer in 2-4 sentences. Be specific, practical, and avoid mentioning that you are a browser model.",
+    "Be specific, practical, and avoid mentioning that you are a browser model.",
+    "Always answer in a detailed manner that exhaustively addresses the user's question."
   ].join("\n")
 }
 
@@ -293,6 +300,46 @@ function parseRetrievalQueryResult(response: string, fallbackPrompt: string): Ge
   }
 }
 
+function normalizeStreamingChunk(value: unknown) {
+  if (typeof value === "string") {
+    return value
+  }
+
+  if (value instanceof Uint8Array) {
+    return new TextDecoder().decode(value)
+  }
+
+  return String(value ?? "")
+}
+
+async function* readStreamingResponse(
+  response: AsyncIterable<string> | ReadableStream<string>
+): AsyncIterable<string> {
+  if (response instanceof ReadableStream) {
+    const reader = response.getReader()
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          break
+        }
+
+        yield normalizeStreamingChunk(value)
+      }
+    } finally {
+      reader.releaseLock()
+    }
+
+    return
+  }
+
+  for await (const value of response) {
+    yield normalizeStreamingChunk(value)
+  }
+}
+
 export function createChromeLocalLlmClient(): LlmClient {
   return {
     id: "chrome-local-llm",
@@ -330,6 +377,42 @@ export function createChromeLocalLlmClient(): LlmClient {
         return await session.prompt(buildPrompt(input), {
           signal: input.signal,
         })
+      } finally {
+        session.destroy?.()
+      }
+    },
+    streamReply: async function* (input) {
+      const languageModel = getChromeLanguageModel()
+
+      if (!languageModel) {
+        throw new Error("Chrome local LLM is not available in this browser.")
+      }
+
+      const availability = await getAvailability(languageModel)
+
+      if (!supportedAvailability.has(availability)) {
+        throw new Error(`Chrome local LLM is ${availability}.`)
+      }
+
+      const systemPrompt = buildSystemPrompt(input)
+      const session = await languageModel.create({
+        systemPrompt,
+        signal: input.signal,
+      })
+
+      try {
+        if (!session.promptStreaming) {
+          yield await session.prompt(buildPrompt(input), {
+            signal: input.signal,
+          })
+          return
+        }
+
+        const response = await session.promptStreaming(buildPrompt(input), {
+          signal: input.signal,
+        })
+
+        yield* readStreamingResponse(response)
       } finally {
         session.destroy?.()
       }
