@@ -34,11 +34,108 @@ import type { LlmClient } from "@/lib/llm"
 import type { GenerateReplyInput } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
-import { dashboardConfig } from "@/config/dashboard"
+import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import App from "./App"
 
 let lastGenerateReplyInput: GenerateReplyInput | null = null
 const FILE_PROCESSING_RESULT_MESSAGE = "docuchat:file-processing-result"
+const EMPTY_CHART_DATA: WorkspaceRouteConfig["views"][number]["chartData"] = []
+const TEST_WORKSPACES: WorkspaceRouteConfig[] = [
+  {
+    id: "market-research",
+    path: "/workspaces/market-research",
+    navLabel: "Market Research",
+    navIcon: "folderKanban",
+    title: "Market Research",
+    documentCount: 6,
+    documentLabel: "Documents Uploaded",
+    isFavorite: true,
+    tabs: [
+      { id: "product-analysis", label: "Product Analysis", colorClass: "bg-sky-400" },
+      { id: "survey-results", label: "Survey Results", colorClass: "bg-cyan-400" },
+      { id: "competitor-insights", label: "Competitor Insights", colorClass: "bg-red-400" },
+    ],
+    views: [
+      {
+        tabId: "product-analysis",
+        highlightedFile: { name: "Market_Overview.pdf", tone: "red" },
+        initialMessages: [
+          {
+            id: "mr-pa-a",
+            side: "right",
+            text: "Sure! Here's a summary of the key market trends in industry...",
+          },
+          {
+            id: "mr-pa-u",
+            side: "left",
+            text: "Give me a summary of the market trends.",
+          },
+        ],
+        chartData: EMPTY_CHART_DATA,
+      },
+      {
+        tabId: "survey-results",
+        highlightedFile: { name: "Survey_Results.csv", tone: "green" },
+        initialMessages: [],
+        chartData: EMPTY_CHART_DATA,
+      },
+      {
+        tabId: "competitor-insights",
+        highlightedFile: { name: "CompetitorTemp.docx", tone: "blue" },
+        initialMessages: [],
+        chartData: EMPTY_CHART_DATA,
+      },
+    ],
+    uploadedDocuments: [
+      { id: "mr-1", name: "Market_Overview.pdf", type: "pdf", tone: "blue" },
+      { id: "mr-2", name: "Sales_Report.docx", type: "doc", tone: "red" },
+      { id: "mr-3", name: "Consumer_Trend.pdf", type: "pdf", tone: "red" },
+      { id: "mr-4", name: "CompetitorTemp.docx", type: "doc", tone: "blue" },
+      { id: "mr-5", name: "Survey_Results.csv", type: "csv", tone: "green" },
+      { id: "mr-6", name: "Industry_Analysis.pptx", type: "ppt", tone: "red" },
+    ],
+  },
+  {
+    id: "legal-files",
+    path: "/workspaces/legal-files",
+    navLabel: "Legal Files",
+    navIcon: "scale",
+    title: "Legal Files",
+    documentCount: 0,
+    documentLabel: "Documents Uploaded",
+    isFavorite: false,
+    tabs: [{ id: "contracts", label: "Contracts", colorClass: "bg-sky-400" }],
+    views: [
+      {
+        tabId: "contracts",
+        highlightedFile: { name: "No documents uploaded", tone: "blue" },
+        initialMessages: [],
+        chartData: EMPTY_CHART_DATA,
+      },
+    ],
+    uploadedDocuments: [],
+  },
+  {
+    id: "travel-planning",
+    path: "/workspaces/travel-planning",
+    navLabel: "Travel Planning",
+    navIcon: "briefcase",
+    title: "Travel Planning",
+    documentCount: 0,
+    documentLabel: "Documents Uploaded",
+    isFavorite: false,
+    tabs: [{ id: "itinerary", label: "Itinerary", colorClass: "bg-sky-400" }],
+    views: [
+      {
+        tabId: "itinerary",
+        highlightedFile: { name: "No documents uploaded", tone: "blue" },
+        initialMessages: [],
+        chartData: EMPTY_CHART_DATA,
+      },
+    ],
+    uploadedDocuments: [],
+  },
+]
 
 const testLlmClient: LlmClient = {
   id: "test-llm",
@@ -70,6 +167,22 @@ function createControlledProcessingWorker() {
 }
 
 function renderApp() {
+  useWorkspaceStore.setState({
+    isLoaded: true,
+    isProcessingDocument: false,
+    workspaces: TEST_WORKSPACES.map((workspace) => ({
+      ...workspace,
+      tabs: workspace.tabs.map((tab) => ({ ...tab })),
+      views: workspace.views.map((view) => ({
+        ...view,
+        chartData: view.chartData.map((point) => ({ ...point })),
+        highlightedFile: { ...view.highlightedFile },
+        initialMessages: view.initialMessages.map((message) => ({ ...message })),
+      })),
+      uploadedDocuments: workspace.uploadedDocuments.map((document) => ({ ...document })),
+    })),
+  })
+
   return render(
     <LlmProvider client={testLlmClient}>
       <WorkspaceProvider>
@@ -91,6 +204,9 @@ afterEach(async () => {
   })
   useDashboardStore.setState({
     activeTabByWorkspace: {},
+    chatTabsByWorkspace: {},
+    clearedTabsByWorkspace: {},
+    tabLabelOverridesByWorkspace: {},
     messagesByWorkspaceTab: {},
     loadedByWorkspaceTab: {},
     replyingByWorkspaceTab: {},
@@ -104,6 +220,39 @@ describe("App", () => {
     renderApp()
 
     expect(await screen.findAllByText("Market Research")).not.toHaveLength(0)
+  })
+
+  it("creates, renames, and clears chats from the chat bar", async () => {
+    renderApp()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create new chat" }))
+
+    const newChatTab = await screen.findByRole("tab", { name: "Chat 1" })
+
+    expect(newChatTab).toBeTruthy()
+
+    fireEvent.doubleClick(newChatTab)
+
+    const renameInput = await screen.findByLabelText("Rename Chat 1")
+
+    fireEvent.change(renameInput, { target: { value: "Renamed Chat" } })
+    fireEvent.keyDown(renameInput, { key: "Enter" })
+
+    expect(await screen.findByRole("tab", { name: "Renamed Chat" })).toBeTruthy()
+  expect(screen.getAllByText("Renamed Chat")).not.toHaveLength(0)
+
+    fireEvent.change(screen.getByPlaceholderText("Ask something about your documents..."), {
+      target: { value: "Temporary chat question" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+
+    expect(await screen.findByText("Temporary chat question")).toBeTruthy()
+    expect(await screen.findByText("Test LLM reply for: Temporary chat question")).toBeTruthy()
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear chat" }))
+
+    expect(screen.queryByText("Temporary chat question")).toBeNull()
+    expect(screen.queryByText("Test LLM reply for: Temporary chat question")).toBeNull()
   })
 
   it("opens semantic search from the header search control", async () => {
@@ -733,7 +882,7 @@ describe("App", () => {
   })
 
   it("merges graph context into hybrid graph RAG retrieval", async () => {
-    const workspace = dashboardConfig.workspaces[0]
+    const workspace = TEST_WORKSPACES[0]
     const llmClient: LlmClient = {
       id: "hybrid-graph-test-llm",
       label: "Hybrid Graph Test LLM",
@@ -802,7 +951,7 @@ describe("App", () => {
   })
 
   it("applies target file constraints to graph retrieval", async () => {
-    const workspace = dashboardConfig.workspaces[0]
+    const workspace = TEST_WORKSPACES[0]
     const context = await generateRagRetrievalContext({
       workspace,
       tabLabel: "Product Analysis",
@@ -836,7 +985,7 @@ describe("App", () => {
     let finalReplyInput: GenerateReplyInput | null = null
     let retrievedQuery = ""
     const workspace = {
-      ...dashboardConfig.workspaces[0],
+      ...TEST_WORKSPACES[0],
       semanticSearchThreshold: 0.42,
     }
     const llmClient: LlmClient = {

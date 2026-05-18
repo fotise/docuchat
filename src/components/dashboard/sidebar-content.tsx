@@ -7,7 +7,6 @@ import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
 import { AppIcon } from "./icon"
 import { IconPeaker } from "./icon-peaker"
-import { NavItem } from "./nav-item"
 
 interface SidebarContentProps {
   showBrand?: boolean
@@ -59,10 +58,6 @@ export function SidebarContent({
     setStatusMessage(`${workspace.title} created.`)
     onNavigate?.()
     navigate(workspace.path)
-  }
-
-  function handleRecentChatClick(item: string) {
-    setStatusMessage(`${item} is a recent chat shortcut placeholder.`)
   }
 
   function startRename(workspaceId: string, title: string) {
@@ -199,19 +194,6 @@ export function SidebarContent({
           )
         })}
 
-        <div className="px-3 pb-2 pt-5 text-xs text-indigo-200/70">
-          {sidebar.recentTitle}
-        </div>
-
-        {sidebar.recentItems.map((item, index) => (
-          <NavItem
-            key={`${item}-${index}`}
-            icon="mail"
-            label={item}
-            small
-            onClick={() => handleRecentChatClick(item)}
-          />
-        ))}
       </div>
     </div>
   )

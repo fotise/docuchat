@@ -1,13 +1,16 @@
-import { useEffect } from "react"
+import { useEffect, useMemo } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { dashboardConfig } from "@/config/dashboard"
-import { ActiveChatsCard } from "@/components/dashboard/active-chats-card"
 import { DashboardShell } from "@/components/dashboard/dashboard-shell"
 import { UploadedDocumentsCard } from "@/components/dashboard/uploaded-documents-card"
 import { WorkspacePanel } from "@/components/dashboard/workspace-panel"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
+import type { WorkspaceTab } from "@/types/dashboard"
 import { NotFoundPage } from "./not-found-page"
+
+const EMPTY_CHAT_TABS: WorkspaceTab[] = []
+const EMPTY_TAB_LABEL_OVERRIDES: Record<string, string> = {}
 
 export function WorkspacePage() {
   const { workspaceId } = useParams()
@@ -24,13 +27,35 @@ export function WorkspacePage() {
     (state) => state.ensureWorkspaceInitialized
   )
   const setActiveTab = useDashboardStore((state) => state.setActiveTab)
+  const chatTabs = useDashboardStore((state) => (
+    workspace ? state.chatTabsByWorkspace[workspace.id] : undefined
+  )) ?? EMPTY_CHAT_TABS
+  const tabLabelOverrides = useDashboardStore((state) => (
+    workspace ? state.tabLabelOverridesByWorkspace[workspace.id] : undefined
+  )) ?? EMPTY_TAB_LABEL_OVERRIDES
+  const visibleTabs = useMemo(() => {
+    if (!workspace) {
+      return []
+    }
+
+    return [
+      ...workspace.tabs.map((tab) => ({
+        ...tab,
+        label: tabLabelOverrides[tab.id] ?? tab.label,
+      })),
+      ...chatTabs.map((tab) => ({
+        ...tab,
+        label: tabLabelOverrides[tab.id] ?? tab.label,
+      })),
+    ]
+  }, [chatTabs, tabLabelOverrides, workspace])
 
   const activeTab = useDashboardStore((state) => {
     if (!workspace) {
       return ""
     }
 
-    return state.activeTabByWorkspace[workspace.id] ?? workspace.tabs[0]?.id ?? ""
+    return state.activeTabByWorkspace[workspace.id] ?? visibleTabs[0]?.id ?? ""
   })
 
   useEffect(() => {
@@ -46,12 +71,12 @@ export function WorkspacePage() {
       return
     }
 
-    const isValid = workspace.tabs.some((tab) => tab.id === activeTab)
+    const isValid = visibleTabs.some((tab) => tab.id === activeTab)
 
-    if (!isValid && workspace.tabs[0]) {
-      setActiveTab(workspace.id, workspace.tabs[0].id)
+    if (!isValid && visibleTabs[0]) {
+      setActiveTab(workspace.id, visibleTabs[0].id)
     }
-  }, [workspace, activeTab, setActiveTab])
+  }, [workspace, activeTab, setActiveTab, visibleTabs])
 
   if (!workspace) {
     return <NotFoundPage />
@@ -118,12 +143,6 @@ export function WorkspacePage() {
             onDeleteDocument={(documentId) => void handleDeleteDocument(documentId)}
             onReprocessDocument={(documentId) => void handleReprocessDocument(documentId)}
             onDeleteWorkspace={() => void handleDeleteWorkspace()}
-          />
-
-          <ActiveChatsCard
-            title={labels.activeChatsTitle}
-            tabs={workspace.tabs}
-            activeTab={activeTab}
           />
         </>
       }

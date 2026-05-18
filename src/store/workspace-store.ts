@@ -21,6 +21,11 @@ import type {
 } from "@/types/dashboard"
 
 const FILE_PROCESSING_RESULT_MESSAGE = "docuchat:file-processing-result"
+const LEGACY_MOCK_WORKSPACE_IDS = new Set([
+  "legal-files",
+  "market-research",
+  "travel-planning",
+])
 
 interface FileProcessingWorkerResult {
   type: typeof FILE_PROCESSING_RESULT_MESSAGE
@@ -247,7 +252,17 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   workspaces: [],
 
   loadWorkspaces: async (seedWorkspaces) => {
-    const workspaces = await seedWorkspacesIfEmpty(seedWorkspaces)
+    const seededWorkspaces = await seedWorkspacesIfEmpty(seedWorkspaces)
+    const workspaces = seededWorkspaces.filter(
+      (workspace) => !LEGACY_MOCK_WORKSPACE_IDS.has(workspace.id)
+    )
+
+    await Promise.all(
+      seededWorkspaces
+        .filter((workspace) => LEGACY_MOCK_WORKSPACE_IDS.has(workspace.id))
+        .map((workspace) => deleteStoredWorkspace(workspace.id))
+    )
+
     set({ isLoaded: true, workspaces })
   },
 

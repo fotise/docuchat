@@ -324,6 +324,25 @@ export async function replaceWorkspaceMessages(
   await tx.done
 }
 
+export async function clearWorkspaceTabMessages(
+  workspaceId: string,
+  tabId: WorkspaceTabId
+) {
+  const db = await getDb()
+  const tx = db.transaction(MESSAGE_STORE, "readwrite")
+  const range = IDBKeyRange.bound(
+    [workspaceId, tabId, 0],
+    [workspaceId, tabId, Number.MAX_SAFE_INTEGER]
+  )
+  const index = tx.store.index("byWorkspaceTabCreatedAt")
+
+  for await (const cursor of index.iterate(range)) {
+    await cursor.delete()
+  }
+
+  await tx.done
+}
+
 export async function clearChatHistory() {
   const db = await getDb()
   await db.clear(MESSAGE_STORE)

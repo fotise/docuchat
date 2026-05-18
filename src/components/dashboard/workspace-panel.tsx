@@ -6,6 +6,7 @@ import { dashboardConfig } from "@/config/dashboard"
 import {
   addChatMessage,
   addChatMessages,
+  clearWorkspaceTabMessages,
   createStoredChatMessage,
   getRecentChatMessages,
 } from "@/lib/chat-history/indexed-db"
@@ -13,18 +14,21 @@ import { generateRagReply } from "@/lib/chat/rag-chat"
 import { useLlmClient } from "@/lib/llm/context"
 import { useDashboardStore } from "@/store/dashboard-store"
 import type {
+  HighlightedFile,
   WorkspaceMessage,
   WorkspaceRouteConfig,
   WorkspaceTabId,
 } from "@/types/dashboard"
 import { DocumentPill } from "./document-pill"
-import { MainChart } from "./main-chart"
 import { MessageBubble } from "./message-bubble"
 import { TabsBar } from "./tabs-bar"
 
 interface WorkspacePanelProps {
   workspace: WorkspaceRouteConfig
 }
+
+const EMPTY_CHAT_TABS: WorkspaceRouteConfig["tabs"] = []
+const EMPTY_TAB_LABEL_OVERRIDES: Record<string, string> = {}
 
 function createMessage(side: "left" | "right", text: string): WorkspaceMessage {
   return {
@@ -38,10 +42,31 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const [inputValue, setInputValue] = useState("")
   const abortControllersRef = useRef<AbortController[]>([])
   const llmClient = useLlmClient()
+  const chatTabs = useDashboardStore(
+    (state) => state.chatTabsByWorkspace[workspace.id]
+  ) ?? EMPTY_CHAT_TABS
+  const tabLabelOverrides = useDashboardStore(
+    (state) => state.tabLabelOverridesByWorkspace[workspace.id]
+  ) ?? EMPTY_TAB_LABEL_OVERRIDES
+  const visibleTabs = useMemo(
+    () => [
+      ...workspace.tabs.map((tab) => ({
+        ...tab,
+        label: tabLabelOverrides[tab.id] ?? tab.label,
+      })),
+      ...chatTabs.map((tab) => ({
+        ...tab,
+        label: tabLabelOverrides[tab.id] ?? tab.label,
+      })),
+    ],
+    [chatTabs, tabLabelOverrides, workspace.tabs]
+  )
 
   const activeTab = useDashboardStore(
-    (state) => state.activeTabByWorkspace[workspace.id] ?? workspace.tabs[0]?.id ?? ""
+    (state) => state.activeTabByWorkspace[workspace.id] ?? visibleTabs[0]?.id ?? ""
   )
+  const createChat = useDashboardStore((state) => state.createChat)
+  const renameChat = useDashboardStore((state) => state.renameChat)
   const setActiveTab = useDashboardStore((state) => state.setActiveTab)
   const setMessages = useDashboardStore((state) => state.setMessages)
   const addMessage = useDashboardStore((state) => state.addMessage)
@@ -52,9 +77,13 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const isLoaded = useDashboardStore(
     (state) => !!state.loadedByWorkspaceTab[workspace.id]?.[activeTab]
   )
+  const isChatCleared = useDashboardStore(
+    (state) => !!state.clearedTabsByWorkspace[workspace.id]?.[activeTab]
+  )
   const isReplying = useDashboardStore(
     (state) => !!state.replyingByWorkspaceTab[workspace.id]?.[activeTab]
   )
+  const markChatCleared = useDashboardStore((state) => state.markChatCleared)
 
   useEffect(() => {
     return () => {
@@ -64,16 +93,31 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   }, [])
 
   const currentView = useMemo(
-    () => workspace.views.find((view) => view.tabId === activeTab) ?? workspace.views[0],
+    () => workspace.views.find((view) => view.tabId === activeTab),
     [activeTab, workspace.views]
   )
 
   const activeTabLabel = useMemo(
-    () => workspace.tabs.find((tab) => tab.id === activeTab)?.label ?? workspace.tabs[0]?.label ?? "",
-    [activeTab, workspace.tabs]
+    () => visibleTabs.find((tab) => tab.id === activeTab)?.label ?? visibleTabs[0]?.label ?? "",
+    [activeTab, visibleTabs]
+  )
+  const highlightedFile = useMemo<HighlightedFile>(() => {
+    if (currentView) {
+      return currentView.highlightedFile
+    }
+
+    const firstDocument = workspace.uploadedDocuments[0]
+
+    return {
+      name: firstDocument?.name ?? "No document selected",
+      tone: firstDocument?.tone ?? "gray",
+    }
+  }, [currentView, workspace.uploadedDocuments])
+  const shouldShowDocumentPill = workspace.uploadedDocuments.some(
+    (document) => document.name === highlightedFile.name
   )
 
-  const currentMessages = storedMessages ?? currentView.initialMessages
+  const currentMessages = storedMessages ?? (isChatCleared ? [] : currentView?.initialMessages ?? [])
   const isSendDisabled = inputValue.trim().length === 0 || isReplying
 
   useEffect(() => {
@@ -91,14 +135,20 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
         return
       }
 
+      if (isChatCleared) {
+        setMessages(workspace.id, activeTab, [])
+        markChatCleared(workspace.id, activeTab)
+        return
+      }
+
+      const initialMessages = currentView?.initialMessages ?? []
+
       await addChatMessages(
-        currentView.initialMessages.map((message) =>
-          createStoredChatMessage(workspace.id, activeTab, message)
-        )
+        initialMessages.map((message) => createStoredChatMessage(workspace.id, activeTab, message))
       )
 
       if (isMounted) {
-        setMessages(workspace.id, activeTab, currentView.initialMessages)
+        setMessages(workspace.id, activeTab, initialMessages)
       }
     }
 
@@ -109,7 +159,20 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     return () => {
       isMounted = false
     }
-  }, [activeTab, currentView.initialMessages, isLoaded, setMessages, workspace.id])
+  }, [activeTab, currentView, isChatCleared, isLoaded, markChatCleared, setMessages, workspace.id])
+
+  async function handleClearChat() {
+    if (!activeTab) {
+      return
+    }
+
+    abortControllersRef.current.forEach((controller) => controller.abort())
+    abortControllersRef.current = []
+    setMessages(workspace.id, activeTab, [])
+    markChatCleared(workspace.id, activeTab)
+    setReplying(workspace.id, activeTab, false)
+    await clearWorkspaceTabMessages(workspace.id, activeTab)
+  }
 
   async function handleSend() {
     const trimmed = inputValue.trim()
@@ -179,8 +242,11 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     <Card className="h-full overflow-hidden rounded-[18px] border-white/10 bg-[linear-gradient(180deg,rgba(18,28,79,.92),rgba(12,20,58,.94))] text-white shadow-[0_10px_30px_rgba(0,0,0,.45)]">
       <div className="border-b border-white/5 bg-black/10 px-3 py-2.5">
         <TabsBar
-          tabs={workspace.tabs}
+          tabs={visibleTabs}
           value={activeTab}
+          onClearChat={() => void handleClearChat()}
+          onCreateChat={() => createChat(workspace.id)}
+          onRenameChat={(tabId, label) => renameChat(workspace.id, tabId, label)}
           onValueChange={(value) => setActiveTab(workspace.id, value)}
         />
       </div>
@@ -188,10 +254,12 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
       <CardContent className="relative flex h-full flex-col bg-[radial-gradient(circle_at_35%_45%,rgba(46,122,255,.16),transparent_28%),radial-gradient(circle_at_75%_72%,rgba(63,255,196,.10),transparent_18%),linear-gradient(180deg,rgba(4,12,38,.35),rgba(5,11,28,.2))] p-3 md:p-5">
         <div className="pointer-events-none absolute right-24 top-28 hidden h-1 w-14 rounded-full bg-[linear-gradient(90deg,transparent,#9b68ff,#62aaff,transparent)] shadow-[0_0_18px_rgba(124,119,255,.85)] md:block" />
 
-        <DocumentPill
-          name={currentView.highlightedFile.name}
-          tone={currentView.highlightedFile.tone}
-        />
+        {shouldShowDocumentPill ? (
+          <DocumentPill
+            name={highlightedFile.name}
+            tone={highlightedFile.tone}
+          />
+        ) : null}
 
         {currentMessages.map((message) => (
           <MessageBubble key={message.id} side={message.side}>
@@ -204,11 +272,6 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
             {dashboardConfig.labels.assistantTyping}
           </MessageBubble>
         ) : null}
-
-        <MainChart
-          data={currentView.chartData}
-          series={dashboardConfig.chartSeries}
-        />
 
         <div className="mt-3 flex flex-col gap-2 md:flex-row">
           <Input

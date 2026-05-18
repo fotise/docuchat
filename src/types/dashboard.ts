@@ -35,7 +35,6 @@ export interface LabelsConfig {
   assistantTyping: string
   pageNotFoundTitle: string
   pageNotFoundDescription: string
-  backHome: string
 }
 
 export interface SidebarConfig {

@@ -6,12 +6,15 @@ import { useWorkspaceStore } from "@/store/workspace-store"
 
 export default function App() {
   const workspaces = useWorkspaceStore((state) => state.workspaces)
-  const defaultPath = workspaces[0]?.path ?? dashboardConfig.workspaces[0]?.path ?? "/workspaces/market-research"
+  const defaultPath = workspaces[0]?.path ?? dashboardConfig.workspaces[0]?.path
 
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Navigate to={defaultPath} replace />} />
+        <Route
+          path="/"
+          element={defaultPath ? <Navigate to={defaultPath} replace /> : <NotFoundPage />}
+        />
         <Route path="/workspaces/:workspaceId" element={<WorkspacePage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
