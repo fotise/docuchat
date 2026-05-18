@@ -4,13 +4,23 @@ import type {
   GenerateReplyDocumentInfo,
   GenerateReplyInput,
   GenerateRetrievalQueryResult,
+  LlmDebugPromptEvent,
   LlmClient,
+  RagDebugTrace,
+  RagDebugTraceChunk,
   RetrievalConfidence,
   RetrievalMode,
 } from "@/lib/llm/types"
 import type { WorkspaceMessage, WorkspaceRouteConfig } from "@/types/dashboard"
 
 interface GenerateRagReplyInput {
+  additionalQueries?: string[]
+  childMatchLimit?: number
+  debugTraceEnabled?: boolean
+  graphDepth?: number
+  graphEntityQueries?: string[]
+  includeDebugTraceExcerpts?: boolean
+  onDebugTrace?: (trace: RagDebugTrace) => void
   workspace: WorkspaceRouteConfig
   tabLabel: string
   prompt: string
@@ -18,23 +28,19 @@ interface GenerateRagReplyInput {
   llmClient: LlmClient
   onProgress?: (message: string) => void
   onToken?: (partialText: string) => void
+  parentChunkLimit?: number
   retrieveGraphContext?: typeof retrieveGraphContextForWorkspace
   retrieveParentChunks?: typeof retrieveParentChunksForWorkspace
-  signal?: AbortSignal
-}
-
-interface GenerateRagRetrievalContextInput extends GenerateRagReplyInput {
-  additionalQueries?: string[]
-  childMatchLimit?: number
-  graphDepth?: number
-  graphEntityQueries?: string[]
-  parentChunkLimit?: number
   retrievalModeOverride?: RetrievalMode
+  signal?: AbortSignal
   targetDocumentNames?: string[]
 }
 
+type GenerateRagRetrievalContextInput = GenerateRagReplyInput
+
 export interface RagRetrievalContext {
   baseInput: GenerateReplyInput
+  debugTrace?: RagDebugTrace
   retrievalError?: string
   retrievalConfidence: RetrievalConfidence
   retrievalDiagnostics: {
@@ -139,6 +145,48 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
 }
 
+function createTraceId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function truncateText(value: string | undefined, maxLength = 700) {
+  if (!value) {
+    return undefined
+  }
+
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value
+}
+
+function toTraceChunks(
+  chunks: NonNullable<GenerateReplyInput["retrievedChunks"]>,
+  includeExcerpts: boolean
+): RagDebugTraceChunk[] {
+  return chunks.map((chunk) => ({
+    documentId: chunk.documentId,
+    documentName: chunk.documentName,
+    excerpt: includeExcerpts ? truncateText(chunk.excerpt ?? chunk.text) : undefined,
+    graphEdgeTypes: chunk.graphEdgeTypes,
+    graphEntityNames: chunk.graphEntityNames,
+    matchedChildChunkIds: chunk.matchedChildChunkIds,
+    matchedQueries: chunk.matchedQueries,
+    pageNumbers: chunk.pageNumbers,
+    parentChunkId: chunk.parentChunkId,
+    retrievalSource: chunk.retrievalSource,
+    score: chunk.score,
+    similarity: chunk.similarity,
+  }))
+}
+
+function applyPromptEventToTrace(trace: RagDebugTrace, event: LlmDebugPromptEvent) {
+  trace.model = {
+    clientId: event.clientId,
+    clientLabel: event.clientLabel,
+    finalPrompt: event.finalPrompt ?? trace.model?.finalPrompt,
+    retrievalPrompt: event.retrievalPrompt ?? trace.model?.retrievalPrompt,
+    systemPrompt: event.systemPrompt ?? trace.model?.systemPrompt,
+  }
+}
+
 function estimateRetrievalConfidence(
   chunks: NonNullable<GenerateReplyInput["retrievedChunks"]>
 ): RetrievalConfidence {
@@ -239,8 +287,11 @@ export async function generateRagRetrievalContext({
   onProgress,
   additionalQueries = [],
   childMatchLimit,
+  debugTraceEnabled = false,
   graphDepth,
   graphEntityQueries = [],
+  includeDebugTraceExcerpts = false,
+  onDebugTrace,
   parentChunkLimit,
   retrievalModeOverride,
   targetDocumentNames = [],
@@ -256,12 +307,19 @@ export async function generateRagRetrievalContext({
     messages: conversationMessages,
     signal,
   }
+  const promptEvents: LlmDebugPromptEvent[] = []
+  const plannerInput: GenerateReplyInput = {
+    ...baseInput,
+    onDebugPrompt: debugTraceEnabled ? (event) => {
+      promptEvents.push(event)
+    } : undefined,
+  }
   let retrievalQueryResult: GenerateRetrievalQueryResult
 
   try {
     onProgress?.("Planning document retrieval…")
     retrievalQueryResult = llmClient.generateRetrievalQuery
-      ? await llmClient.generateRetrievalQuery(baseInput)
+      ? await llmClient.generateRetrievalQuery(plannerInput)
       : createFallbackRetrievalQuery(baseInput)
   } catch (error) {
     if (signal?.aborted) {
@@ -386,10 +444,58 @@ export async function generateRagRetrievalContext({
     onProgress?.("No document retrieval needed for this turn…")
   }
 
+  const retrievalConfidence = estimateRetrievalConfidence(retrievedChunks)
+  const debugTrace: RagDebugTrace | undefined = debugTraceEnabled
+    ? {
+        id: createTraceId(),
+        createdAt: new Date().toISOString(),
+        workspaceTitle: workspace.title,
+        tabLabel,
+        userPrompt: prompt,
+        selectedRetrievalMode: retrievalModeOverride ?? "auto",
+        effectiveRetrievalMode: retrievalMode,
+        searchCriteria: {
+          additionalQueries,
+          childMatchLimit,
+          graphDepth,
+          graphEntityQueries,
+          parentChunkLimit,
+          targetDocumentNames,
+        },
+        planner: {
+          input: baseInput,
+          result: retrievalQueryResult,
+        },
+        retrieval: {
+          confidence: retrievalConfidence,
+          diagnostics: {
+            effectiveSearchQueries: searchQueries,
+            effectiveTargetDocumentNames: resolvedTargetDocumentNames,
+            graphChunkCount,
+            graphError,
+            semanticChunkCount,
+            semanticError,
+          },
+          error: retrievalError,
+          query: retrievalQuery,
+          retrievedChunks: toTraceChunks(retrievedChunks, includeDebugTraceExcerpts),
+        },
+      }
+    : undefined
+
+  if (debugTrace) {
+    for (const event of promptEvents) {
+      applyPromptEventToTrace(debugTrace, event)
+    }
+
+    onDebugTrace?.(debugTrace)
+  }
+
   return {
     baseInput,
+    debugTrace,
     retrievalError,
-    retrievalConfidence: estimateRetrievalConfidence(retrievedChunks),
+    retrievalConfidence,
     retrievalDiagnostics: {
       effectiveSearchQueries: searchQueries,
       effectiveTargetDocumentNames: resolvedTargetDocumentNames,
@@ -410,12 +516,16 @@ export async function generateRagRetrievalContext({
 export async function generateRagReply(input: GenerateRagReplyInput): Promise<string> {
   const {
     baseInput,
+    debugTrace,
     retrievalConfidence,
     retrievalMode,
     retrievalQuery,
     retrievalQueryResult,
     retrievedChunks,
-  } = await generateRagRetrievalContext(input)
+  } = await generateRagRetrievalContext({
+    ...input,
+    onDebugTrace: undefined,
+  })
 
   const replyInput = {
     ...baseInput,
@@ -426,14 +536,41 @@ export async function generateRagReply(input: GenerateRagReplyInput): Promise<st
     retrievalConfidence,
     retrievedChunks,
   }
+  const promptEvents: LlmDebugPromptEvent[] = []
+  const replyInputWithDebug: GenerateReplyInput = {
+    ...replyInput,
+    onDebugPrompt: input.debugTraceEnabled ? (event) => {
+      promptEvents.push(event)
+
+      if (debugTrace) {
+        applyPromptEventToTrace(debugTrace, event)
+      }
+    } : undefined,
+  }
+
+  if (debugTrace) {
+    debugTrace.finalReplyInput = replyInput
+  }
 
   input.onProgress?.("Composing the answer…")
+
+  function emitFinalTrace() {
+    if (!debugTrace) {
+      return
+    }
+
+    for (const event of promptEvents) {
+      applyPromptEventToTrace(debugTrace, event)
+    }
+
+    input.onDebugTrace?.(debugTrace)
+  }
 
   if (input.llmClient.streamReply) {
     let reply = ""
     let hasStartedStreaming = false
 
-    for await (const chunk of input.llmClient.streamReply(replyInput)) {
+    for await (const chunk of input.llmClient.streamReply(replyInputWithDebug)) {
       if (!hasStartedStreaming) {
         input.onProgress?.("Streaming the answer…")
         hasStartedStreaming = true
@@ -444,11 +581,14 @@ export async function generateRagReply(input: GenerateRagReplyInput): Promise<st
       await waitForUiFrame()
     }
 
+    emitFinalTrace()
+
     return reply
   }
 
-  const reply = await input.llmClient.generateReply(replyInput)
+  const reply = await input.llmClient.generateReply(replyInputWithDebug)
   input.onToken?.(reply)
+  emitFinalTrace()
 
   return reply
 }

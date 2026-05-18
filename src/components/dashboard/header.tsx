@@ -4,14 +4,14 @@ import ForceGraph2D, { type NodeObject } from "react-force-graph-2d"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { dashboardConfig } from "@/config/dashboard"
+import { copyTextToClipboard, createRagDebugTraceJson, createRagDebugTraceMarkdown } from "@/lib/chat/debug-trace"
 import { generateRagRetrievalContext, type RagRetrievalContext } from "@/lib/chat/rag-chat"
 import { DEFAULT_MIN_SEMANTIC_SIMILARITY } from "@/lib/file-processing/semantic-search"
 import { useLlmClient } from "@/lib/llm/context"
-import type { RetrievedContextChunk } from "@/lib/llm/types"
+import type { RagDebugTrace, RetrievedContextChunk } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
-import type { WorkspaceRouteConfig } from "@/types/dashboard"
-import type { RetrievalMode } from "@/lib/llm/types"
+import type { WorkspaceRouteConfig, WorkspaceSearchRetrievalMode } from "@/types/dashboard"
 import { AppIcon } from "./icon"
 import { IconPeaker } from "./icon-peaker"
 import { MobileMenu } from "./mobile-menu"
@@ -37,8 +37,6 @@ interface GraphViewLink {
   type: string
 }
 
-type DebugRetrievalMode = "auto" | Extract<RetrievalMode, "semantic" | "graph" | "hybrid_graph">
-
 function HeaderChip({ icon, label }: HeaderChipProps) {
   return (
     <div className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 shadow-[0_10px_30px_rgba(0,0,0,.45)]">
@@ -51,14 +49,12 @@ function HeaderChip({ icon, label }: HeaderChipProps) {
 export function Header({ workspace }: HeaderProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [isSearching, setIsSearching] = useState(false)
-  const [searchQuery, setSearchQuery] = useState("")
+  const [captureDebugTrace, setCaptureDebugTrace] = useState(false)
+  const [includeDebugTraceExcerpts, setIncludeDebugTraceExcerpts] = useState(false)
+  const [lastDebugTrace, setLastDebugTrace] = useState<RagDebugTrace | null>(null)
   const [searchResults, setSearchResults] = useState<RetrievedContextChunk[]>([])
   const [ragDebugContext, setRagDebugContext] = useState<RagRetrievalContext | null>(null)
-  const [additionalQueries, setAdditionalQueries] = useState("")
-  const [graphEntityQueries, setGraphEntityQueries] = useState("")
-  const [debugRetrievalMode, setDebugRetrievalMode] = useState<DebugRetrievalMode>("semantic")
   const [selectedGraphNode, setSelectedGraphNode] = useState("")
-  const [targetDocumentNames, setTargetDocumentNames] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
   const [isRenaming, setIsRenaming] = useState(false)
   const [draftTitle, setDraftTitle] = useState("")
@@ -71,12 +67,7 @@ export function Header({ workspace }: HeaderProps) {
   )
   const renameWorkspace = useWorkspaceStore((state) => state.renameWorkspace)
   const updateWorkspaceIcon = useWorkspaceStore((state) => state.updateWorkspaceIcon)
-  const updateWorkspaceSemanticSearchThreshold = useWorkspaceStore(
-    (state) => state.updateWorkspaceSemanticSearchThreshold
-  )
-  const updateWorkspaceRagSearchSettings = useWorkspaceStore(
-    (state) => state.updateWorkspaceRagSearchSettings
-  )
+  const updateWorkspaceSearchCriteria = useWorkspaceStore((state) => state.updateWorkspaceSearchCriteria)
   const { header } = dashboardConfig
   const currentView = workspace.views.find((view) => view.tabId === activeTab) ?? workspace.views[0]
   const activeTabLabel = workspace.tabs.find((tab) => tab.id === activeTab)?.label ?? workspace.tabs[0]?.label ?? ""
@@ -85,6 +76,11 @@ export function Header({ workspace }: HeaderProps) {
   const childMatchLimit = workspace.ragSearchChildMatchLimit ?? 40
   const graphSearchDepth = workspace.graphSearchDepth ?? 1
   const parentChunkLimit = workspace.ragSearchParentChunkLimit ?? 10
+  const additionalQueries = workspace.additionalQueries ?? []
+  const debugRetrievalMode = workspace.searchRetrievalMode ?? "semantic"
+  const graphEntityQueries = workspace.graphEntityQueries ?? []
+  const searchQuery = workspace.searchCriteriaQuery ?? ""
+  const targetDocumentNames = workspace.targetDocumentNames ?? []
   const graphView = useMemo(() => {
     const nodes = Array.from(
       new Set(searchResults.flatMap((chunk) => chunk.graphEntityNames ?? []))
@@ -164,16 +160,20 @@ export function Header({ workspace }: HeaderProps) {
         prompt: searchQuery,
         messages: currentMessages,
         llmClient,
-        additionalQueries: parseList(additionalQueries),
+        additionalQueries,
         childMatchLimit,
+        debugTraceEnabled: captureDebugTrace,
         graphDepth: graphSearchDepth,
-        graphEntityQueries: parseList(graphEntityQueries),
+        graphEntityQueries,
+        includeDebugTraceExcerpts,
+        onDebugTrace: setLastDebugTrace,
         parentChunkLimit,
         retrievalModeOverride: debugRetrievalMode === "auto" ? undefined : debugRetrievalMode,
-        targetDocumentNames: parseList(targetDocumentNames),
+        targetDocumentNames,
       })
 
       setRagDebugContext(context)
+      setLastDebugTrace(context.debugTrace ?? null)
       setSearchResults(context.retrievedChunks)
       setSelectedGraphNode("")
       setStatusMessage(context.retrievalError ?? "RAG simulation completed.")
@@ -186,6 +186,24 @@ export function Header({ workspace }: HeaderProps) {
     }
   }
 
+  async function handleCopyTrace(format: "json" | "markdown") {
+    if (!lastDebugTrace) {
+      setStatusMessage("No debug trace captured yet.")
+      return
+    }
+
+    try {
+      await copyTextToClipboard(
+        format === "json"
+          ? createRagDebugTraceJson(lastDebugTrace)
+          : createRagDebugTraceMarkdown(lastDebugTrace)
+      )
+      setStatusMessage(`Debug trace copied as ${format.toUpperCase()}.`)
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not copy debug trace.")
+    }
+  }
+
   function handleThresholdChange(value: string) {
     const parsedValue = Number.parseFloat(value)
 
@@ -193,7 +211,9 @@ export function Header({ workspace }: HeaderProps) {
       return
     }
 
-    void updateWorkspaceSemanticSearchThreshold(workspace.id, parsedValue)
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      semanticSearchThreshold: parsedValue,
+    })
   }
 
   function handleChildLimitChange(value: string) {
@@ -203,10 +223,8 @@ export function Header({ workspace }: HeaderProps) {
       return
     }
 
-    void updateWorkspaceRagSearchSettings(workspace.id, {
-      graphSearchDepth,
+    void updateWorkspaceSearchCriteria(workspace.id, {
       ragSearchChildMatchLimit: parsedValue,
-      ragSearchParentChunkLimit: parentChunkLimit,
     })
   }
 
@@ -217,9 +235,7 @@ export function Header({ workspace }: HeaderProps) {
       return
     }
 
-    void updateWorkspaceRagSearchSettings(workspace.id, {
-      graphSearchDepth,
-      ragSearchChildMatchLimit: childMatchLimit,
+    void updateWorkspaceSearchCriteria(workspace.id, {
       ragSearchParentChunkLimit: parsedValue,
     })
   }
@@ -231,10 +247,38 @@ export function Header({ workspace }: HeaderProps) {
       return
     }
 
-    void updateWorkspaceRagSearchSettings(workspace.id, {
+    void updateWorkspaceSearchCriteria(workspace.id, {
       graphSearchDepth: parsedValue,
-      ragSearchChildMatchLimit: childMatchLimit,
-      ragSearchParentChunkLimit: parentChunkLimit,
+    })
+  }
+
+  function handleRetrievalModeChange(value: string) {
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      searchRetrievalMode: value as WorkspaceSearchRetrievalMode,
+    })
+  }
+
+  function handleSearchQueryChange(value: string) {
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      searchCriteriaQuery: value,
+    })
+  }
+
+  function handleTargetDocumentNamesChange(value: string) {
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      targetDocumentNames: parseList(value),
+    })
+  }
+
+  function handleAdditionalQueriesChange(value: string) {
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      additionalQueries: parseList(value),
+    })
+  }
+
+  function handleGraphEntityQueriesChange(value: string) {
+    void updateWorkspaceSearchCriteria(workspace.id, {
+      graphEntityQueries: parseList(value),
     })
   }
 
@@ -316,8 +360,8 @@ export function Header({ workspace }: HeaderProps) {
       <div className="flex flex-wrap items-center justify-end gap-2 py-3">
         <button
           type="button"
-          aria-label="Open semantic search"
-          title="Open semantic search"
+          aria-label="Open search criteria"
+          title="Open search criteria"
           onClick={() => setIsSearchOpen(true)}
           className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 shadow-[0_10px_30px_rgba(0,0,0,.45)] transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70"
         >
@@ -355,15 +399,15 @@ export function Header({ workspace }: HeaderProps) {
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label="Semantic search"
+          aria-label="Search criteria"
         >
           <div className="app-scrollbar flex h-[80vh] max-h-[80vh] w-full max-w-7xl flex-col overflow-y-auto rounded-2xl border border-white/10 bg-[#111b4b] text-white shadow-[0_24px_70px_rgba(0,0,0,.55)]">
             <div className="border-b border-white/10 p-5">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-200/70">
-                RAG search debugger
+                Search criteria
               </p>
               <h2 className="mt-2 text-lg font-extrabold leading-tight">
-                Simulate chat retrieval across {workspace.title}
+                Configure and simulate retrieval across {workspace.title}
               </h2>
               <form
                 className="mt-4 grid gap-3"
@@ -372,10 +416,10 @@ export function Header({ workspace }: HeaderProps) {
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px]">
                   <Input
                     type="search"
-                    aria-label="Semantic search query"
+                    aria-label="Search criteria query"
                     placeholder="Ask the same question you would ask in chat..."
                     value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onChange={(event) => handleSearchQueryChange(event.target.value)}
                     className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-400 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                   />
                   <Button
@@ -395,7 +439,7 @@ export function Header({ workspace }: HeaderProps) {
                     <select
                       aria-label="RAG retrieval mode"
                       value={debugRetrievalMode}
-                      onChange={(event) => setDebugRetrievalMode(event.target.value as DebugRetrievalMode)}
+                      onChange={(event) => handleRetrievalModeChange(event.target.value)}
                       className="h-10 w-full rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm text-slate-100 outline-none focus:border-sky-300/60 focus:ring-2 focus:ring-sky-300/20"
                     >
                       <option value="auto">Auto</option>
@@ -471,8 +515,8 @@ export function Header({ workspace }: HeaderProps) {
                     <Input
                       aria-label="RAG target document names"
                       placeholder="file.pdf, notes.docx"
-                      value={targetDocumentNames}
-                      onChange={(event) => setTargetDocumentNames(event.target.value)}
+                      value={targetDocumentNames.join(", ")}
+                      onChange={(event) => handleTargetDocumentNamesChange(event.target.value)}
                       className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                     />
                   </label>
@@ -483,8 +527,8 @@ export function Header({ workspace }: HeaderProps) {
                     <Input
                       aria-label="RAG additional queries"
                       placeholder="query 1, query 2"
-                      value={additionalQueries}
-                      onChange={(event) => setAdditionalQueries(event.target.value)}
+                      value={additionalQueries.join(", ")}
+                      onChange={(event) => handleAdditionalQueriesChange(event.target.value)}
                       className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                     />
                   </label>
@@ -495,10 +539,29 @@ export function Header({ workspace }: HeaderProps) {
                     <Input
                       aria-label="Graph entity queries"
                       placeholder="Customer retention, Competitor A"
-                      value={graphEntityQueries}
-                      onChange={(event) => setGraphEntityQueries(event.target.value)}
+                      value={graphEntityQueries.join(", ")}
+                      onChange={(event) => handleGraphEntityQueriesChange(event.target.value)}
                       className="h-10 rounded-xl border-white/10 bg-slate-950/30 text-sm text-slate-100 placeholder:text-slate-500 focus-visible:border-sky-300/60 focus-visible:ring-sky-300/20"
                     />
+                  </label>
+                  <label className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm text-slate-100 md:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={captureDebugTrace}
+                      onChange={(event) => setCaptureDebugTrace(event.target.checked)}
+                      className="h-4 w-4 accent-sky-400"
+                    />
+                    <span>Capture debug trace</span>
+                  </label>
+                  <label className="flex h-10 items-center gap-2 rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm text-slate-100 md:col-span-2">
+                    <input
+                      type="checkbox"
+                      checked={includeDebugTraceExcerpts}
+                      disabled={!captureDebugTrace}
+                      onChange={(event) => setIncludeDebugTraceExcerpts(event.target.checked)}
+                      className="h-4 w-4 accent-sky-400 disabled:opacity-50"
+                    />
+                    <span>Include retrieved excerpts</span>
                   </label>
                 </div>
               </form>
@@ -552,6 +615,34 @@ export function Header({ workspace }: HeaderProps) {
                       <span className="line-clamp-2 break-words text-amber-100">{ragDebugContext.retrievalDiagnostics.graphError}</span>
                     </div>
                   ) : null}
+                  <div className="md:col-span-2">
+                    <span className="block text-sky-200/70">Debug trace</span>
+                    <span className="line-clamp-2 break-words">
+                      {lastDebugTrace
+                        ? `Trace ${lastDebugTrace.id} captured${lastDebugTrace.model?.finalPrompt ? " with final prompt" : " without final prompt"}.`
+                        : captureDebugTrace ? "Run a simulation to capture a trace." : "Enable capture to create a shareable trace."}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-end gap-2 md:col-span-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={!lastDebugTrace}
+                      onClick={() => void handleCopyTrace("json")}
+                      className="h-8 rounded-xl border border-white/10 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/15 disabled:opacity-40"
+                    >
+                      Copy trace JSON
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={!lastDebugTrace}
+                      onClick={() => void handleCopyTrace("markdown")}
+                      className="h-8 rounded-xl border border-white/10 bg-white/10 px-3 text-xs text-slate-100 hover:bg-white/15 disabled:opacity-40"
+                    >
+                      Copy trace Markdown
+                    </Button>
+                  </div>
                 </div>
               ) : null}
               {ragDebugContext?.retrievalError ? (
@@ -668,7 +759,7 @@ export function Header({ workspace }: HeaderProps) {
               <div className="app-scrollbar overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/20">
                 <table
                   className="min-w-[1560px] table-fixed text-left text-xs"
-                  aria-label="Semantic search results table"
+                  aria-label="Search criteria results table"
                 >
                   <thead className="bg-white/5 text-[11px] uppercase tracking-[0.12em] text-sky-200/70">
                     <tr>
@@ -772,7 +863,7 @@ export function Header({ workspace }: HeaderProps) {
               <Button
                 type="button"
                 variant="secondary"
-                aria-label="Close semantic search"
+                aria-label="Close search criteria"
                 onClick={() => setIsSearchOpen(false)}
                 className="rounded-xl border border-white/10 bg-white/10 text-slate-100 hover:bg-white/15"
               >

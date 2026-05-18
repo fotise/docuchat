@@ -31,7 +31,7 @@ import {
 import { generateRagReply, generateRagRetrievalContext } from "@/lib/chat/rag-chat"
 import { createChromeLocalLlmClient } from "@/lib/llm/chrome-local-llm"
 import type { LlmClient } from "@/lib/llm"
-import type { GenerateReplyInput } from "@/lib/llm/types"
+import type { GenerateReplyInput, LlmDebugPromptEvent, RagDebugTrace } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
@@ -263,16 +263,16 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "Product Analysis" })).toBeTruthy()
   })
 
-  it("opens semantic search from the header search control", async () => {
+  it("opens and persists search criteria from the header search control", async () => {
     renderApp()
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open semantic search" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Open search criteria" }))
 
-    expect(await screen.findByRole("dialog", { name: "Semantic search" })).toBeTruthy()
-    expect(screen.getByText("RAG search debugger")).toBeTruthy()
+    expect(await screen.findByRole("dialog", { name: "Search criteria" })).toBeTruthy()
+    expect(screen.getByText("Search criteria")).toBeTruthy()
     expect(screen.getByText("Interactive graph view")).toBeTruthy()
     expect(screen.getByText("No graph nodes yet.")).toBeTruthy()
-    expect(screen.getByRole("searchbox", { name: "Semantic search query" })).toBeTruthy()
+    expect(screen.getByRole("searchbox", { name: "Search criteria query" })).toBeTruthy()
     expect(screen.getByRole("spinbutton", { name: "Semantic search threshold" })).toHaveValue(0.3)
     expect(screen.getByRole("spinbutton", { name: "RAG child match limit" })).toHaveValue(40)
     expect(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" })).toHaveValue(10)
@@ -281,7 +281,11 @@ describe("App", () => {
     expect(screen.getByRole("textbox", { name: "RAG target document names" })).toBeTruthy()
     expect(screen.getByRole("textbox", { name: "RAG additional queries" })).toBeTruthy()
     expect(screen.getByRole("textbox", { name: "Graph entity queries" })).toBeTruthy()
-    expect(screen.getByRole("table", { name: "Semantic search results table" })).toBeTruthy()
+    expect(screen.getByRole("table", { name: "Search criteria results table" })).toBeTruthy()
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search criteria query" }), {
+      target: { value: "customer retention" },
+    })
 
     fireEvent.change(screen.getByRole("spinbutton", { name: "Semantic search threshold" }), {
       target: { value: "0.6" },
@@ -298,6 +302,15 @@ describe("App", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "RAG retrieval mode" }), {
       target: { value: "graph" },
     })
+    fireEvent.change(screen.getByRole("textbox", { name: "RAG target document names" }), {
+      target: { value: "Market_Overview.pdf, Survey_Results.csv" },
+    })
+    fireEvent.change(screen.getByRole("textbox", { name: "RAG additional queries" }), {
+      target: { value: "retention, customer health" },
+    })
+    fireEvent.change(screen.getByRole("textbox", { name: "Graph entity queries" }), {
+      target: { value: "Customer retention, Customer Health" },
+    })
 
     expect(screen.getByRole("combobox", { name: "RAG retrieval mode" })).toHaveValue("graph")
 
@@ -310,11 +323,25 @@ describe("App", () => {
       expect(workspace?.graphSearchDepth).toBe(2)
       expect(workspace?.ragSearchChildMatchLimit).toBe(55)
       expect(workspace?.ragSearchParentChunkLimit).toBe(8)
+      expect(workspace?.searchCriteriaQuery).toBe("customer retention")
+      expect(workspace?.searchRetrievalMode).toBe("graph")
+      expect(workspace?.targetDocumentNames).toEqual(["Market_Overview.pdf", "Survey_Results.csv"])
+      expect(workspace?.additionalQueries).toEqual(["retention", "customer health"])
+      expect(workspace?.graphEntityQueries).toEqual(["Customer retention", "Customer Health"])
     })
 
-    fireEvent.click(screen.getByRole("button", { name: "Close semantic search" }))
+    fireEvent.click(screen.getByRole("button", { name: "Close search criteria" }))
 
-    expect(screen.queryByRole("dialog", { name: "Semantic search" })).toBeNull()
+    expect(screen.queryByRole("dialog", { name: "Search criteria" })).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Open search criteria" }))
+
+    expect(await screen.findByRole("dialog", { name: "Search criteria" })).toBeTruthy()
+    expect(screen.getByRole("searchbox", { name: "Search criteria query" })).toHaveValue("customer retention")
+    expect(screen.getByRole("combobox", { name: "RAG retrieval mode" })).toHaveValue("graph")
+    expect(screen.getByRole("textbox", { name: "RAG target document names" })).toHaveValue("Market_Overview.pdf, Survey_Results.csv")
+    expect(screen.getByRole("textbox", { name: "RAG additional queries" })).toHaveValue("retention, customer health")
+    expect(screen.getByRole("textbox", { name: "Graph entity queries" })).toHaveValue("Customer retention, Customer Health")
   })
 
   it("ranks embedded child chunks with semantic search", async () => {
@@ -1300,6 +1327,72 @@ describe("App", () => {
       parentChunkId: "parent-1",
       text: "Retention improved with healthier customer cohorts.",
     })
+  })
+
+  it("captures a shareable semantic RAG debug trace with final prompt details", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    let capturedTrace: RagDebugTrace | null = null
+    const reply = await generateRagReply({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "What does it say about retention?",
+      messages: [],
+      debugTraceEnabled: true,
+      includeDebugTraceExcerpts: true,
+      onDebugTrace: (trace) => {
+        capturedTrace = trace
+      },
+      llmClient: {
+        id: "trace-test-llm",
+        label: "Trace Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          intent: "Explain retention evidence.",
+          needsDocumentSearch: true,
+          retrievalMode: "semantic",
+          searchQuery: "retention evidence",
+        }),
+        generateReply: async (input) => {
+          input.onDebugPrompt?.({
+            clientId: "trace-test-llm",
+            clientLabel: "Trace Test LLM",
+            finalPrompt: "FINAL PROMPT WITH RAG CONTEXT",
+            promptKind: "reply",
+            systemPrompt: "SYSTEM PROMPT",
+          })
+          return "Trace reply"
+        },
+      },
+      retrieveParentChunks: async () => [
+        {
+          documentId: "doc-1",
+          documentName: "Market_Overview.pdf",
+          excerpt: "Retention improved with healthier customer cohorts.",
+          matchedChildChunkIds: ["child-1"],
+          pageNumbers: [3],
+          parentChunkId: "parent-1",
+          retrievalSource: "semantic",
+          score: 0.91,
+          similarity: 0.86,
+          text: "Retention improved with healthier customer cohorts.",
+        },
+      ],
+    })
+
+    expect(reply).toBe("Trace reply")
+    expect(capturedTrace).toMatchObject({
+      effectiveRetrievalMode: "semantic",
+      userPrompt: "What does it say about retention?",
+    })
+    expect(capturedTrace?.retrieval.diagnostics.semanticChunkCount).toBe(1)
+    expect(capturedTrace?.retrieval.diagnostics.graphChunkCount).toBe(0)
+    expect(capturedTrace?.retrieval.retrievedChunks[0]).toMatchObject({
+      documentName: "Market_Overview.pdf",
+      excerpt: "Retention improved with healthier customer cohorts.",
+      parentChunkId: "parent-1",
+    })
+    expect(capturedTrace?.model?.finalPrompt).toBe("FINAL PROMPT WITH RAG CONTEXT")
+    expect(capturedTrace?.finalReplyInput?.retrievedChunks?.[0].parentChunkId).toBe("parent-1")
   })
 
   it("opens workspace management and deletes all workspace files", async () => {
@@ -2353,6 +2446,7 @@ describe("App", () => {
   it("adds workspace date and file context to the Chrome local LLM system prompt", async () => {
     let systemPrompt = ""
     let promptPayload = ""
+    const debugPromptEvents: LlmDebugPromptEvent[] = []
 
     window.LanguageModel = {
       availability: async () => "available",
@@ -2388,6 +2482,7 @@ describe("App", () => {
       ],
       prompt: "Summarize the files",
       messages: [],
+      onDebugPrompt: (event) => debugPromptEvents.push(event),
     })
 
     expect(reply).toBe("Chrome local reply")
@@ -2409,6 +2504,13 @@ describe("App", () => {
     expect(promptPayload).toContain("Conversation context for continuity and reference:")
     expect(promptPayload).toContain("Conversation so far: none")
     expect(promptPayload).toContain("Summarize the files")
+    expect(debugPromptEvents[0]).toMatchObject({
+      clientId: "chrome-local-llm",
+      clientLabel: "Chrome Local LLM",
+      finalPrompt: promptPayload,
+      promptKind: "reply",
+      systemPrompt,
+    })
   })
 
   it("prioritizes file inventory context for file count questions", async () => {

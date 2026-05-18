@@ -368,13 +368,22 @@ export function createChromeLocalLlmClient(): LlmClient {
       }
 
       const systemPrompt = buildSystemPrompt(input)
+      const finalPrompt = buildPrompt(input)
+
+      input.onDebugPrompt?.({
+        clientId: "chrome-local-llm",
+        clientLabel: "Chrome Local LLM",
+        finalPrompt,
+        promptKind: "reply",
+        systemPrompt,
+      })
       const session = await languageModel.create({
         systemPrompt,
         signal: input.signal,
       })
 
       try {
-        return await session.prompt(buildPrompt(input), {
+        return await session.prompt(finalPrompt, {
           signal: input.signal,
         })
       } finally {
@@ -395,6 +404,15 @@ export function createChromeLocalLlmClient(): LlmClient {
       }
 
       const systemPrompt = buildSystemPrompt(input)
+      const finalPrompt = buildPrompt(input)
+
+      input.onDebugPrompt?.({
+        clientId: "chrome-local-llm",
+        clientLabel: "Chrome Local LLM",
+        finalPrompt,
+        promptKind: "reply",
+        systemPrompt,
+      })
       const session = await languageModel.create({
         systemPrompt,
         signal: input.signal,
@@ -402,13 +420,13 @@ export function createChromeLocalLlmClient(): LlmClient {
 
       try {
         if (!session.promptStreaming) {
-          yield await session.prompt(buildPrompt(input), {
+          yield await session.prompt(finalPrompt, {
             signal: input.signal,
           })
           return
         }
 
-        const response = await session.promptStreaming(buildPrompt(input), {
+        const response = await session.promptStreaming(finalPrompt, {
           signal: input.signal,
         })
 
@@ -436,7 +454,16 @@ export function createChromeLocalLlmClient(): LlmClient {
       })
 
       try {
-        const response = await session.prompt(buildRetrievalQueryPrompt(input), {
+        const retrievalPrompt = buildRetrievalQueryPrompt(input)
+
+        input.onDebugPrompt?.({
+          clientId: "chrome-local-llm",
+          clientLabel: "Chrome Local LLM",
+          promptKind: "retrieval_query",
+          retrievalPrompt,
+        })
+
+        const response = await session.prompt(retrievalPrompt, {
           signal: input.signal,
         })
 

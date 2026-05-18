@@ -10,8 +10,10 @@ import {
   createStoredChatMessage,
   getRecentChatMessages,
 } from "@/lib/chat-history/indexed-db"
+import { copyTextToClipboard, createRagDebugTraceJson, createRagDebugTraceMarkdown } from "@/lib/chat/debug-trace"
 import { generateRagReply } from "@/lib/chat/rag-chat"
 import { useLlmClient } from "@/lib/llm/context"
+import type { RagDebugTrace } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import type {
   HighlightedFile,
@@ -42,6 +44,10 @@ function createMessage(side: "left" | "right", text: string): WorkspaceMessage {
 export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const [inputValue, setInputValue] = useState("")
   const [assistantProgressMessage, setAssistantProgressMessage] = useState("")
+  const [captureChatDebugTrace, setCaptureChatDebugTrace] = useState(false)
+  const [includeChatDebugTraceExcerpts, setIncludeChatDebugTraceExcerpts] = useState(false)
+  const [lastChatDebugTrace, setLastChatDebugTrace] = useState<RagDebugTrace | null>(null)
+  const [traceStatusMessage, setTraceStatusMessage] = useState("")
   const [streamingAssistantMessage, setStreamingAssistantMessage] = useState("")
   const abortControllersRef = useRef<AbortController[]>([])
   const llmClient = useLlmClient()
@@ -228,8 +234,18 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     try {
       const assistantText = await generateRagReply({
         workspace,
+        additionalQueries: workspace.additionalQueries ?? [],
+        childMatchLimit: workspace.ragSearchChildMatchLimit,
+        debugTraceEnabled: captureChatDebugTrace,
+        graphDepth: workspace.graphSearchDepth,
+        graphEntityQueries: workspace.graphEntityQueries ?? [],
+        includeDebugTraceExcerpts: includeChatDebugTraceExcerpts,
+        onDebugTrace: setLastChatDebugTrace,
         prompt: trimmed,
+        parentChunkLimit: workspace.ragSearchParentChunkLimit,
+        retrievalModeOverride: workspace.searchRetrievalMode === "auto" ? undefined : workspace.searchRetrievalMode,
         tabLabel: tabLabelAtSend,
+        targetDocumentNames: workspace.targetDocumentNames ?? [],
         messages: currentMessages,
         llmClient,
         onProgress: setAssistantProgressMessage,
@@ -270,6 +286,24 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
         setAssistantProgressMessage("")
         setReplying(workspace.id, tabIdAtSend, false)
       }
+    }
+  }
+
+  async function handleCopyChatTrace(format: "json" | "markdown") {
+    if (!lastChatDebugTrace) {
+      setTraceStatusMessage("No chat debug trace captured yet.")
+      return
+    }
+
+    try {
+      await copyTextToClipboard(
+        format === "json"
+          ? createRagDebugTraceJson(lastChatDebugTrace)
+          : createRagDebugTraceMarkdown(lastChatDebugTrace)
+      )
+      setTraceStatusMessage(`Chat debug trace copied as ${format.toUpperCase()}.`)
+    } catch (error) {
+      setTraceStatusMessage(error instanceof Error ? error.message : "Could not copy chat debug trace.")
     }
   }
 
@@ -340,6 +374,44 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
           >
             {dashboardConfig.labels.sendButton}
           </Button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-300">
+          <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+            <input
+              type="checkbox"
+              checked={captureChatDebugTrace}
+              onChange={(event) => setCaptureChatDebugTrace(event.target.checked)}
+              className="h-4 w-4 accent-sky-400"
+            />
+            <span>Capture chat debug trace</span>
+          </label>
+          <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+            <input
+              type="checkbox"
+              checked={includeChatDebugTraceExcerpts}
+              disabled={!captureChatDebugTrace}
+              onChange={(event) => setIncludeChatDebugTraceExcerpts(event.target.checked)}
+              className="h-4 w-4 accent-sky-400 disabled:opacity-50"
+            />
+            <span>Include excerpts</span>
+          </label>
+          <button
+            type="button"
+            disabled={!lastChatDebugTrace}
+            onClick={() => void handleCopyChatTrace("json")}
+            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-slate-100 transition hover:bg-white/10 disabled:opacity-40"
+          >
+            Copy last chat trace JSON
+          </button>
+          <button
+            type="button"
+            disabled={!lastChatDebugTrace}
+            onClick={() => void handleCopyChatTrace("markdown")}
+            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 font-bold text-slate-100 transition hover:bg-white/10 disabled:opacity-40"
+          >
+            Copy last chat trace Markdown
+          </button>
+          <span role="status">{traceStatusMessage}</span>
         </div>
       </CardContent>
     </Card>

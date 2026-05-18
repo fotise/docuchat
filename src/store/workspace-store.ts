@@ -18,6 +18,7 @@ import type {
   IconKey,
   UploadedDocument,
   WorkspaceRouteConfig,
+  WorkspaceSearchRetrievalMode,
 } from "@/types/dashboard"
 
 const FILE_PROCESSING_RESULT_MESSAGE = "docuchat:file-processing-result"
@@ -53,6 +54,19 @@ interface FileProcessingWorkerRequest {
 
 type FileProcessingWorkerFactory = () => Worker
 
+type WorkspaceSearchCriteria = Partial<Pick<
+  WorkspaceRouteConfig,
+  | "additionalQueries"
+  | "graphEntityQueries"
+  | "graphSearchDepth"
+  | "ragSearchChildMatchLimit"
+  | "ragSearchParentChunkLimit"
+  | "searchCriteriaQuery"
+  | "searchRetrievalMode"
+  | "semanticSearchThreshold"
+  | "targetDocumentNames"
+>>
+
 interface WorkspaceStoreState {
   isLoaded: boolean
   isProcessingDocument: boolean
@@ -68,6 +82,10 @@ interface WorkspaceStoreState {
   updateWorkspaceRagSearchSettings: (
     workspaceId: string,
     settings: Pick<WorkspaceRouteConfig, "graphSearchDepth" | "ragSearchChildMatchLimit" | "ragSearchParentChunkLimit">
+  ) => Promise<void>
+  updateWorkspaceSearchCriteria: (
+    workspaceId: string,
+    criteria: WorkspaceSearchCriteria
   ) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
   processNextWorkspaceDocument: (
@@ -107,6 +125,53 @@ function buildEmptyChartData(): ChartPoint[] {
 
 function createId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+}
+
+function normalizeCriteriaList(value: string[] | undefined) {
+  return Array.from(new Set((value ?? []).map((item) => item.trim()).filter(Boolean)))
+}
+
+function normalizeSearchRetrievalMode(value: WorkspaceSearchRetrievalMode | undefined) {
+  return value ?? "semantic"
+}
+
+function buildSearchCriteriaUpdate(
+  workspace: WorkspaceRouteConfig,
+  criteria: WorkspaceSearchCriteria
+) {
+  return {
+    additionalQueries: criteria.additionalQueries !== undefined
+      ? normalizeCriteriaList(criteria.additionalQueries)
+      : workspace.additionalQueries ?? [],
+    graphEntityQueries: criteria.graphEntityQueries !== undefined
+      ? normalizeCriteriaList(criteria.graphEntityQueries)
+      : workspace.graphEntityQueries ?? [],
+    graphSearchDepth: Math.min(
+      3,
+      Math.max(1, criteria.graphSearchDepth ?? workspace.graphSearchDepth ?? 1)
+    ),
+    ragSearchChildMatchLimit: Math.min(
+      100,
+      Math.max(5, criteria.ragSearchChildMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40)
+    ),
+    ragSearchParentChunkLimit: Math.min(
+      20,
+      Math.max(1, criteria.ragSearchParentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10)
+    ),
+    searchCriteriaQuery: criteria.searchCriteriaQuery !== undefined
+      ? criteria.searchCriteriaQuery
+      : workspace.searchCriteriaQuery ?? "",
+    searchRetrievalMode: normalizeSearchRetrievalMode(
+      criteria.searchRetrievalMode ?? workspace.searchRetrievalMode
+    ),
+    semanticSearchThreshold: Math.min(
+      0.95,
+      Math.max(0, criteria.semanticSearchThreshold ?? workspace.semanticSearchThreshold ?? 0.3)
+    ),
+    targetDocumentNames: criteria.targetDocumentNames !== undefined
+      ? normalizeCriteriaList(criteria.targetDocumentNames)
+      : workspace.targetDocumentNames ?? [],
+  } satisfies WorkspaceSearchCriteria
 }
 
 function getFileExtension(fileName: string) {
@@ -225,6 +290,15 @@ function buildNewWorkspace(existingWorkspaces: WorkspaceRouteConfig[]) {
     documentCount: 0,
     documentLabel: "Documents Uploaded",
     isFavorite: false,
+    additionalQueries: [],
+    graphEntityQueries: [],
+    graphSearchDepth: 1,
+    ragSearchChildMatchLimit: 40,
+    ragSearchParentChunkLimit: 10,
+    searchCriteriaQuery: "",
+    searchRetrievalMode: "semantic",
+    semanticSearchThreshold: 0.3,
+    targetDocumentNames: [],
     tabs: [
       { id: "general", label: "General Chat", colorClass: "bg-sky-400" },
     ],
@@ -325,64 +399,41 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
   },
 
   updateWorkspaceSemanticSearchThreshold: async (workspaceId, threshold) => {
-    const workspace = get().workspaces.find((item) => item.id === workspaceId)
-
-    if (!workspace) {
-      return
-    }
-
-    const normalizedThreshold = Math.min(0.95, Math.max(0, threshold))
-
-    if (workspace.semanticSearchThreshold === normalizedThreshold) {
-      return
-    }
-
-    const updatedWorkspace = {
-      ...workspace,
-      semanticSearchThreshold: normalizedThreshold,
-    }
-
-    set((state) => ({
-      workspaces: state.workspaces.map((item) =>
-        item.id === workspaceId ? updatedWorkspace : item
-      ),
-    }))
-    await saveWorkspace(updatedWorkspace)
+    await get().updateWorkspaceSearchCriteria(workspaceId, {
+      semanticSearchThreshold: threshold,
+    })
   },
 
   updateWorkspaceRagSearchSettings: async (workspaceId, settings) => {
+    await get().updateWorkspaceSearchCriteria(workspaceId, settings)
+  },
+
+  updateWorkspaceSearchCriteria: async (workspaceId, criteria) => {
     const workspace = get().workspaces.find((item) => item.id === workspaceId)
 
     if (!workspace) {
       return
     }
 
-    const normalizedSettings = {
-      graphSearchDepth: Math.min(
-        3,
-        Math.max(1, settings.graphSearchDepth ?? workspace.graphSearchDepth ?? 1)
-      ),
-      ragSearchChildMatchLimit: Math.min(
-        100,
-        Math.max(5, settings.ragSearchChildMatchLimit ?? workspace.ragSearchChildMatchLimit ?? 40)
-      ),
-      ragSearchParentChunkLimit: Math.min(
-        20,
-        Math.max(1, settings.ragSearchParentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10)
-      ),
-    }
+    const normalizedCriteria = buildSearchCriteriaUpdate(workspace, criteria)
 
     if (
-      workspace.ragSearchChildMatchLimit === normalizedSettings.ragSearchChildMatchLimit
-      && workspace.ragSearchParentChunkLimit === normalizedSettings.ragSearchParentChunkLimit
-      && workspace.graphSearchDepth === normalizedSettings.graphSearchDepth
+      workspace.additionalQueries === normalizedCriteria.additionalQueries
+      && workspace.graphEntityQueries === normalizedCriteria.graphEntityQueries
+      && workspace.graphSearchDepth === normalizedCriteria.graphSearchDepth
+      && workspace.ragSearchChildMatchLimit === normalizedCriteria.ragSearchChildMatchLimit
+      && workspace.ragSearchParentChunkLimit === normalizedCriteria.ragSearchParentChunkLimit
+      && workspace.searchCriteriaQuery === normalizedCriteria.searchCriteriaQuery
+      && workspace.searchRetrievalMode === normalizedCriteria.searchRetrievalMode
+      && workspace.semanticSearchThreshold === normalizedCriteria.semanticSearchThreshold
+      && workspace.targetDocumentNames === normalizedCriteria.targetDocumentNames
     ) {
       return
     }
 
     const updatedWorkspace = {
       ...workspace,
-      ...normalizedSettings,
+      ...normalizedCriteria,
     }
 
     set((state) => ({

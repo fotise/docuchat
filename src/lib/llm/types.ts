@@ -6,6 +6,7 @@ export interface GenerateReplyInput {
   documents: GenerateReplyDocumentInfo[]
   prompt: string
   messages: WorkspaceMessage[]
+  onDebugPrompt?: (event: LlmDebugPromptEvent) => void
   retrievalIntent?: string
   retrievalMode?: RetrievalMode
   retrievalQuery?: string
@@ -13,6 +14,15 @@ export interface GenerateReplyInput {
   retrievalConfidence?: RetrievalConfidence
   retrievedChunks?: RetrievedContextChunk[]
   signal?: AbortSignal
+}
+
+export interface LlmDebugPromptEvent {
+  clientId: string
+  clientLabel: string
+  finalPrompt?: string
+  promptKind: "retrieval_query" | "reply"
+  retrievalPrompt?: string
+  systemPrompt?: string
 }
 
 export interface GenerateReplyDocumentInfo {
@@ -57,6 +67,65 @@ export interface RetrievedContextChunk {
   keywordScore?: number
   retrievalSource?: "semantic" | "graph" | "hybrid"
   sourceScore?: number
+}
+
+export interface RagDebugTraceChunk {
+  documentId: string
+  documentName?: string
+  excerpt?: string
+  graphEdgeTypes?: string[]
+  graphEntityNames?: string[]
+  matchedChildChunkIds: string[]
+  matchedQueries?: string[]
+  pageNumbers: number[]
+  parentChunkId: string
+  retrievalSource?: RetrievedContextChunk["retrievalSource"]
+  score: number
+  similarity: number
+}
+
+export interface RagDebugTrace {
+  id: string
+  createdAt: string
+  workspaceTitle: string
+  tabLabel: string
+  userPrompt: string
+  selectedRetrievalMode?: RetrievalMode | "auto"
+  effectiveRetrievalMode: RetrievalMode
+  searchCriteria: {
+    additionalQueries: string[]
+    childMatchLimit?: number
+    graphDepth?: number
+    graphEntityQueries: string[]
+    parentChunkLimit?: number
+    targetDocumentNames: string[]
+  }
+  planner: {
+    input: GenerateReplyInput
+    result: GenerateRetrievalQueryResult
+  }
+  retrieval: {
+    confidence: RetrievalConfidence
+    diagnostics: {
+      effectiveSearchQueries: string[]
+      effectiveTargetDocumentNames: string[]
+      graphChunkCount: number
+      graphError?: string
+      semanticChunkCount: number
+      semanticError?: string
+    }
+    error?: string
+    query: string
+    retrievedChunks: RagDebugTraceChunk[]
+  }
+  model?: {
+    clientId: string
+    clientLabel: string
+    finalPrompt?: string
+    retrievalPrompt?: string
+    systemPrompt?: string
+  }
+  finalReplyInput?: GenerateReplyInput
 }
 
 export interface LlmClient {

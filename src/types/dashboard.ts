@@ -11,6 +11,7 @@ export type IconKey =
 export type UploadedDocTone = "blue" | "red" | "green" | "gray"
 export type FileProcessingStatus = "toBeProcessed" | "processing" | "processed" | "error"
 export type MessageSide = "left" | "right"
+export type WorkspaceSearchRetrievalMode = "auto" | "semantic" | "graph" | "hybrid_graph"
 export type WorkspaceTabId = string
 export type ChartMetricKey = "growth" | "reach" | "intent" | "signal"
 
@@ -107,9 +108,14 @@ export interface WorkspaceRouteConfig {
   documentLabel: string
   isFavorite: boolean
   semanticSearchThreshold?: number
+  additionalQueries?: string[]
   ragSearchChildMatchLimit?: number
   ragSearchParentChunkLimit?: number
+  graphEntityQueries?: string[]
   graphSearchDepth?: number
+  searchCriteriaQuery?: string
+  searchRetrievalMode?: WorkspaceSearchRetrievalMode
+  targetDocumentNames?: string[]
   tabs: WorkspaceTab[]
   views: WorkspaceView[]
   uploadedDocuments: UploadedDocument[]
