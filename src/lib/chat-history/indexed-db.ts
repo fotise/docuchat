@@ -83,6 +83,8 @@ export interface StoredGraphEntity {
   embedding?: number[]
   embeddingDimensions?: number
   embeddingModel?: string
+  manualOverride?: boolean
+  source?: "extracted" | "manual"
   createdAt: number
   updatedAt: number
 }
@@ -98,6 +100,8 @@ export interface StoredGraphEdge {
   weight: number
   evidenceText: string[]
   confidence: number
+  manualOverride?: boolean
+  source?: "extracted" | "manual"
   createdAt: number
   updatedAt: number
 }
@@ -477,11 +481,19 @@ export async function replaceDocumentGraph(
   const entityIdsToDelete = new Set<string>()
 
   for await (const cursor of entityDocumentIndex.iterate(documentId)) {
+    if (cursor.value.manualOverride || cursor.value.source === "manual") {
+      continue
+    }
+
     entityIdsToDelete.add(cursor.value.id)
     await cursor.delete()
   }
 
   for await (const cursor of edgeWorkspaceIndex.iterate(workspaceId)) {
+    if (cursor.value.manualOverride || cursor.value.source === "manual") {
+      continue
+    }
+
     if (
       cursor.value.documentIds.includes(documentId)
       || entityIdsToDelete.has(cursor.value.sourceEntityId)
@@ -498,6 +510,7 @@ export async function replaceDocumentGraph(
       ...entity,
       workspaceId,
       documentId: entity.documentId ?? documentId,
+      source: entity.source ?? "extracted",
       createdAt: entity.createdAt || now,
       updatedAt: now,
     })
@@ -507,6 +520,7 @@ export async function replaceDocumentGraph(
     await edgeStore.put({
       ...edge,
       workspaceId,
+      source: edge.source ?? "extracted",
       createdAt: edge.createdAt || now,
       updatedAt: now,
     })
@@ -523,6 +537,100 @@ export async function getWorkspaceGraphEntities(workspaceId: string) {
 export async function getWorkspaceGraphEdges(workspaceId: string) {
   const db = await getDb()
   return db.getAllFromIndex(GRAPH_EDGE_STORE, "workspaceId", workspaceId)
+}
+
+function normalizeGraphEntityName(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+export function createManualGraphEntityId(workspaceId: string, name: string) {
+  const normalizedName = normalizeGraphEntityName(name).replace(/\s+/g, "-") || "entity"
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+  return `${workspaceId}:manual:entity:${normalizedName}:${suffix}`
+}
+
+export function createManualGraphEdgeId(workspaceId: string, sourceEntityId: string, targetEntityId: string, type: GraphEdgeType) {
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+  return `${workspaceId}:manual:edge:${sourceEntityId}:${targetEntityId}:${type}:${suffix}`
+}
+
+export async function upsertGraphEntity(entity: StoredGraphEntity) {
+  const db = await getDb()
+  const now = Date.now()
+  const existing = await db.get(GRAPH_ENTITY_STORE, entity.id)
+
+  await db.put(GRAPH_ENTITY_STORE, {
+    ...existing,
+    ...entity,
+    normalizedName: normalizeGraphEntityName(entity.name),
+    createdAt: entity.createdAt || existing?.createdAt || now,
+    updatedAt: now,
+  })
+}
+
+export async function upsertGraphEdge(edge: StoredGraphEdge) {
+  const db = await getDb()
+  const now = Date.now()
+  const tx = db.transaction([GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
+  const entityStore = tx.objectStore(GRAPH_ENTITY_STORE)
+  const sourceEntity = await entityStore.get(edge.sourceEntityId)
+  const targetEntity = await entityStore.get(edge.targetEntityId)
+
+  if (!sourceEntity || !targetEntity || sourceEntity.workspaceId !== edge.workspaceId || targetEntity.workspaceId !== edge.workspaceId) {
+    throw new Error("Graph edge endpoints must exist in the same workspace.")
+  }
+
+  const existing = await tx.objectStore(GRAPH_EDGE_STORE).get(edge.id)
+
+  await tx.objectStore(GRAPH_EDGE_STORE).put({
+    ...existing,
+    ...edge,
+    createdAt: edge.createdAt || existing?.createdAt || now,
+    updatedAt: now,
+  })
+
+  await tx.done
+}
+
+export async function deleteGraphEntity(workspaceId: string, entityId: string) {
+  const db = await getDb()
+  const tx = db.transaction([GRAPH_ENTITY_STORE, GRAPH_EDGE_STORE], "readwrite")
+  const entityStore = tx.objectStore(GRAPH_ENTITY_STORE)
+  const edgeStore = tx.objectStore(GRAPH_EDGE_STORE)
+  const entity = await entityStore.get(entityId)
+
+  if (!entity || entity.workspaceId !== workspaceId) {
+    await tx.done
+    return
+  }
+
+  await entityStore.delete(entityId)
+
+  for await (const cursor of edgeStore.index("workspaceId").iterate(workspaceId)) {
+    if (cursor.value.sourceEntityId === entityId || cursor.value.targetEntityId === entityId) {
+      await cursor.delete()
+    }
+  }
+
+  await tx.done
+}
+
+export async function deleteGraphEdge(workspaceId: string, edgeId: string) {
+  const db = await getDb()
+  const edge = await db.get(GRAPH_EDGE_STORE, edgeId)
+
+  if (!edge || edge.workspaceId !== workspaceId) {
+    return
+  }
+
+  await db.delete(GRAPH_EDGE_STORE, edgeId)
 }
 
 export async function deleteDocumentGraph(documentId: string) {
@@ -584,11 +692,19 @@ export async function deleteWorkspaceDocument(documentId: string) {
   }
 
   for await (const cursor of graphEntityDocumentIndex.iterate(documentId)) {
+    if (cursor.value.manualOverride || cursor.value.source === "manual") {
+      continue
+    }
+
     entityIdsToDelete.add(cursor.value.id)
     await cursor.delete()
   }
 
   for await (const cursor of graphEdgeWorkspaceIndex.iterate()) {
+    if (cursor.value.manualOverride || cursor.value.source === "manual") {
+      continue
+    }
+
     if (
       cursor.value.documentIds.includes(documentId)
       || entityIdsToDelete.has(cursor.value.sourceEntityId)

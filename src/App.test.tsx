@@ -1534,6 +1534,110 @@ describe("App", () => {
     expect(screen.queryByRole("dialog", { name: "Workspace management" })).toBeNull()
   })
 
+  it("edits the workspace ontology from the management dialog", async () => {
+    const graph = buildDocumentGraph(
+      "market-research",
+      "mr-1",
+      [
+        {
+          id: "ontology-parent-1",
+          workspaceId: "market-research",
+          documentId: "mr-1",
+          chunkId: "ontology-parent-1",
+          level: "parent",
+          text: "Customer retention is linked with customer health.",
+          pageNumbers: [4],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "ontology-child-1",
+          workspaceId: "market-research",
+          documentId: "mr-1",
+          chunkId: "ontology-child-1",
+          parentChunkId: "ontology-parent-1",
+          level: "child",
+          text: "Customer retention is linked with customer health.",
+          pageNumbers: [4],
+          order: 2,
+          createdAt: 2,
+        },
+      ]
+    )
+
+    await replaceDocumentGraph("market-research", "mr-1", graph.entities, graph.edges)
+
+    renderApp()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Workspace" }))
+    const ontologyTab = await screen.findByRole("tab", { name: "Ontology" })
+    fireEvent.pointerDown(ontologyTab)
+    fireEvent.click(ontologyTab)
+
+    expect(await screen.findByLabelText("Ontology summary")).toBeTruthy()
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Ontology entity name" }), {
+      target: { value: "Manual Service Capability" },
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology entity type" }), {
+      target: { value: "topic" },
+    })
+    fireEvent.change(screen.getByRole("textbox", { name: "Ontology entity aliases" }), {
+      target: { value: "Service capability, Capability" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save entity" }))
+
+    await screen.findByText("Added entity Manual Service Capability.")
+    expect(screen.getByRole("table", { name: "Ontology entities table" })).toBeTruthy()
+    expect(screen.getAllByText("Manual Service Capability").length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Ontology entity name" }), {
+      target: { value: "Manual Service Owner" },
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology entity type" }), {
+      target: { value: "person" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save entity" }))
+
+    await screen.findByText("Added entity Manual Service Owner.")
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology relation source" }), {
+      target: { value: (await getWorkspaceGraphEntities("market-research")).find((entity) => entity.name === "Manual Service Owner")?.id ?? "" },
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology relation type" }), {
+      target: { value: "depends_on" },
+    })
+    fireEvent.change(screen.getByRole("combobox", { name: "Ontology relation target" }), {
+      target: { value: (await getWorkspaceGraphEntities("market-research")).find((entity) => entity.name === "Manual Service Capability")?.id ?? "" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Add relation" }))
+
+    await screen.findByText("Added ontology relation.")
+
+    const entities = await getWorkspaceGraphEntities("market-research")
+    const edges = await getWorkspaceGraphEdges("market-research")
+    const manualCapability = entities.find((entity) => entity.name === "Manual Service Capability")
+    const manualOwner = entities.find((entity) => entity.name === "Manual Service Owner")
+
+    expect(manualCapability).toMatchObject({
+      aliases: ["Service capability", "Capability"],
+      manualOverride: true,
+      source: "manual",
+      type: "topic",
+    })
+    expect(manualOwner).toMatchObject({
+      manualOverride: true,
+      source: "manual",
+      type: "person",
+    })
+    expect(edges.some((edge) => (
+      edge.sourceEntityId === manualOwner?.id
+      && edge.targetEntityId === manualCapability?.id
+      && edge.type === "depends_on"
+      && edge.source === "manual"
+    ))).toBe(true)
+  })
+
   it("renders fixed file cards with ellipsis, tooltip details, and a scrollable list", async () => {
     renderApp()
 

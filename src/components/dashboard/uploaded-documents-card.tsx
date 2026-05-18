@@ -26,6 +26,7 @@ import {
 import type { UploadedDocument } from "@/types/dashboard"
 import { DocumentMiniCard } from "./document-mini-card"
 import { FilePreviewIcon } from "./file-preview-icon"
+import { OntologyEditorTab } from "./ontology-editor-tab"
 
 const CHUNKS_PER_PAGE = 10
 const MAX_WORKSPACE_GRAPH_NODES = 80
@@ -415,6 +416,22 @@ export function UploadedDocumentsCard({
     setIsManagingWorkspace(true)
   }
 
+  async function refreshWorkspaceGraph() {
+    setIsLoadingWorkspaceGraph(true)
+
+    try {
+      const [entities, edges] = await Promise.all([
+        getWorkspaceGraphEntities(workspaceId),
+        getWorkspaceGraphEdges(workspaceId),
+      ])
+
+      setWorkspaceGraphEntities(entities)
+      setWorkspaceGraphEdges(edges)
+    } finally {
+      setIsLoadingWorkspaceGraph(false)
+    }
+  }
+
   function handleDeleteClick() {
     setIsConfirmingDelete(true)
     setStatusMessage("Deleting this workspace will remove its documents and chats.")
@@ -681,6 +698,13 @@ export function UploadedDocumentsCard({
                   >
                     Interactive graph
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="ontology"
+                    onClick={() => setManagementTab("ontology")}
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-emerald-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-emerald-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                  >
+                    Ontology
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -925,6 +949,17 @@ export function UploadedDocumentsCard({
                     </section>
                   ) : null}
                 </div>
+              </TabsContent>
+
+              <TabsContent value="ontology" className="m-0 min-h-0 flex-1">
+                <OntologyEditorTab
+                  workspaceId={workspaceId}
+                  entities={workspaceGraphEntities}
+                  edges={workspaceGraphEdges}
+                  documentNameById={documentNameById}
+                  isLoading={isLoadingWorkspaceGraph}
+                  onRefresh={refreshWorkspaceGraph}
+                />
               </TabsContent>
             </Tabs>
 
