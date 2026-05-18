@@ -206,6 +206,7 @@ afterEach(async () => {
     activeTabByWorkspace: {},
     chatTabsByWorkspace: {},
     clearedTabsByWorkspace: {},
+    deletedTabsByWorkspace: {},
     tabLabelOverridesByWorkspace: {},
     messagesByWorkspaceTab: {},
     loadedByWorkspaceTab: {},
@@ -253,6 +254,13 @@ describe("App", () => {
 
     expect(screen.queryByText("Temporary chat question")).toBeNull()
     expect(screen.queryByText("Test LLM reply for: Temporary chat question")).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete chat Renamed Chat" }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole("tab", { name: "Renamed Chat" })).toBeNull()
+    })
+    expect(screen.getByRole("tab", { name: "Product Analysis" })).toBeTruthy()
   })
 
   it("opens semantic search from the header search control", async () => {

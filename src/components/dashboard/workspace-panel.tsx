@@ -29,6 +29,7 @@ interface WorkspacePanelProps {
 
 const EMPTY_CHAT_TABS: WorkspaceRouteConfig["tabs"] = []
 const EMPTY_TAB_LABEL_OVERRIDES: Record<string, string> = {}
+const EMPTY_DELETED_TABS: Record<string, boolean> = {}
 
 function createMessage(side: "left" | "right", text: string): WorkspaceMessage {
   return {
@@ -50,24 +51,30 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
   const tabLabelOverrides = useDashboardStore(
     (state) => state.tabLabelOverridesByWorkspace[workspace.id]
   ) ?? EMPTY_TAB_LABEL_OVERRIDES
+  const deletedTabs = useDashboardStore(
+    (state) => state.deletedTabsByWorkspace[workspace.id]
+  ) ?? EMPTY_DELETED_TABS
   const visibleTabs = useMemo(
     () => [
-      ...workspace.tabs.map((tab) => ({
-        ...tab,
-        label: tabLabelOverrides[tab.id] ?? tab.label,
-      })),
+      ...workspace.tabs
+        .filter((tab) => !deletedTabs[tab.id])
+        .map((tab) => ({
+          ...tab,
+          label: tabLabelOverrides[tab.id] ?? tab.label,
+        })),
       ...chatTabs.map((tab) => ({
         ...tab,
         label: tabLabelOverrides[tab.id] ?? tab.label,
       })),
     ],
-    [chatTabs, tabLabelOverrides, workspace.tabs]
+    [chatTabs, deletedTabs, tabLabelOverrides, workspace.tabs]
   )
 
   const activeTab = useDashboardStore(
     (state) => state.activeTabByWorkspace[workspace.id] ?? visibleTabs[0]?.id ?? ""
   )
   const createChat = useDashboardStore((state) => state.createChat)
+  const deleteChat = useDashboardStore((state) => state.deleteChat)
   const renameChat = useDashboardStore((state) => state.renameChat)
   const setActiveTab = useDashboardStore((state) => state.setActiveTab)
   const setMessages = useDashboardStore((state) => state.setMessages)
@@ -182,6 +189,19 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
     await clearWorkspaceTabMessages(workspace.id, activeTab)
   }
 
+  async function handleDeleteChat(tabId: WorkspaceTabId) {
+    if (tabId === activeTab) {
+      abortControllersRef.current.forEach((controller) => controller.abort())
+      abortControllersRef.current = []
+      setAssistantProgressMessage("")
+      setStreamingAssistantMessage("")
+    }
+
+    deleteChat(workspace.id, tabId, workspace.tabs)
+    setReplying(workspace.id, tabId, false)
+    await clearWorkspaceTabMessages(workspace.id, tabId)
+  }
+
   async function handleSend() {
     const trimmed = inputValue.trim()
 
@@ -261,6 +281,7 @@ export function WorkspacePanel({ workspace }: WorkspacePanelProps) {
           value={activeTab}
           onClearChat={() => void handleClearChat()}
           onCreateChat={() => createChat(workspace.id)}
+          onDeleteChat={(tabId) => void handleDeleteChat(tabId)}
           onRenameChat={(tabId, label) => renameChat(workspace.id, tabId, label)}
           onValueChange={(value) => setActiveTab(workspace.id, value)}
         />

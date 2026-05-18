@@ -66,10 +66,10 @@ export function MessageBubble({
       animate={{ opacity: 1, y: 0, x: 0 }}
       transition={{ duration: 0.25 }}
       className={cn(
-        "app-scrollbar relative mb-4 max-w-[85%] overflow-x-auto rounded-2xl px-4 py-3 text-sm font-medium leading-6 shadow-2xl md:max-w-[360px]",
+        "app-scrollbar relative mb-4 max-w-[85%] overflow-x-auto rounded-2xl px-4 py-3 text-sm font-medium leading-6 shadow-2xl",
         isRight
-          ? "ml-auto bg-gradient-to-b from-blue-400 to-blue-700 text-white"
-          : "ml-0 bg-gradient-to-b from-slate-500/80 to-slate-700/90 text-white md:ml-4"
+          ? "ml-auto min-w-[min(85%,18rem)] bg-gradient-to-b from-blue-400 to-blue-700 text-white md:min-w-[420px] md:max-w-[680px] lg:max-w-[760px]"
+          : "ml-0 bg-gradient-to-b from-slate-500/80 to-slate-700/90 text-white md:ml-4 md:max-w-[360px]"
       )}
     >
       {shouldRenderMarkdown ? <MarkdownMessage content={children} /> : children}

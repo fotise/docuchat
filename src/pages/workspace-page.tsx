@@ -11,6 +11,7 @@ import { NotFoundPage } from "./not-found-page"
 
 const EMPTY_CHAT_TABS: WorkspaceTab[] = []
 const EMPTY_TAB_LABEL_OVERRIDES: Record<string, string> = {}
+const EMPTY_DELETED_TABS: Record<string, boolean> = {}
 
 export function WorkspacePage() {
   const { workspaceId } = useParams()
@@ -33,22 +34,27 @@ export function WorkspacePage() {
   const tabLabelOverrides = useDashboardStore((state) => (
     workspace ? state.tabLabelOverridesByWorkspace[workspace.id] : undefined
   )) ?? EMPTY_TAB_LABEL_OVERRIDES
+  const deletedTabs = useDashboardStore((state) => (
+    workspace ? state.deletedTabsByWorkspace[workspace.id] : undefined
+  )) ?? EMPTY_DELETED_TABS
   const visibleTabs = useMemo(() => {
     if (!workspace) {
       return []
     }
 
     return [
-      ...workspace.tabs.map((tab) => ({
-        ...tab,
-        label: tabLabelOverrides[tab.id] ?? tab.label,
-      })),
+      ...workspace.tabs
+        .filter((tab) => !deletedTabs[tab.id])
+        .map((tab) => ({
+          ...tab,
+          label: tabLabelOverrides[tab.id] ?? tab.label,
+        })),
       ...chatTabs.map((tab) => ({
         ...tab,
         label: tabLabelOverrides[tab.id] ?? tab.label,
       })),
     ]
-  }, [chatTabs, tabLabelOverrides, workspace])
+  }, [chatTabs, deletedTabs, tabLabelOverrides, workspace])
 
   const activeTab = useDashboardStore((state) => {
     if (!workspace) {
