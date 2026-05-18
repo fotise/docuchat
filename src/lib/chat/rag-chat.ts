@@ -29,6 +29,7 @@ interface GenerateRagRetrievalContextInput extends GenerateRagReplyInput {
   graphDepth?: number
   graphEntityQueries?: string[]
   parentChunkLimit?: number
+  retrievalModeOverride?: RetrievalMode
   targetDocumentNames?: string[]
 }
 
@@ -36,6 +37,14 @@ export interface RagRetrievalContext {
   baseInput: GenerateReplyInput
   retrievalError?: string
   retrievalConfidence: RetrievalConfidence
+  retrievalDiagnostics: {
+    effectiveSearchQueries: string[]
+    effectiveTargetDocumentNames: string[]
+    graphChunkCount: number
+    graphError?: string
+    semanticChunkCount: number
+    semanticError?: string
+  }
   retrievalMode: RetrievalMode
   retrievalQuery: string
   retrievalQueryResult: GenerateRetrievalQueryResult
@@ -124,6 +133,10 @@ function getSearchQueries(result: GenerateRetrievalQueryResult, prompt: string) 
         .filter(Boolean)
     )
   )
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
 }
 
 function estimateRetrievalConfidence(
@@ -229,6 +242,7 @@ export async function generateRagRetrievalContext({
   graphDepth,
   graphEntityQueries = [],
   parentChunkLimit,
+  retrievalModeOverride,
   targetDocumentNames = [],
   signal,
 }: GenerateRagRetrievalContextInput): Promise<RagRetrievalContext> {
@@ -257,22 +271,35 @@ export async function generateRagRetrievalContext({
     retrievalQueryResult = createFallbackRetrievalQuery(baseInput)
   }
 
-  const retrievalMode = getRetrievalMode(retrievalQueryResult, prompt)
+  const retrievalMode = retrievalModeOverride ?? getRetrievalMode(retrievalQueryResult, prompt)
+  const needsDocumentSearch = retrievalModeOverride
+    ? retrievalModeOverride !== "none" && retrievalModeOverride !== "inventory"
+    : retrievalQueryResult.needsDocumentSearch
+  const plannerSearchQueries = getSearchQueries(retrievalQueryResult, prompt)
   const searchQueries = Array.from(
-    new Set([...getSearchQueries(retrievalQueryResult, prompt), ...additionalQueries]
-    )
+    new Set([
+      ...(retrievalModeOverride ? [prompt, ...plannerSearchQueries] : plannerSearchQueries),
+      ...additionalQueries,
+    ].map((query) => query.trim()).filter(Boolean))
   )
   const retrievalQuery = searchQueries[0] ?? prompt
   const resolvedTargetDocumentNames = Array.from(
-    new Set([...(retrievalQueryResult.targetDocumentNames ?? []), ...targetDocumentNames])
+    new Set(retrievalModeOverride
+      ? targetDocumentNames
+      : [...(retrievalQueryResult.targetDocumentNames ?? []), ...targetDocumentNames]
+    )
   )
   const graphQueries = Array.from(
     new Set([...(retrievalQueryResult.graphEntities ?? []), ...graphEntityQueries, ...searchQueries])
   )
   let retrievedChunks: GenerateReplyInput["retrievedChunks"] = []
   let retrievalError: string | undefined
+  let semanticChunkCount = 0
+  let graphChunkCount = 0
+  let semanticError: string | undefined
+  let graphError: string | undefined
 
-  if (retrievalQueryResult.needsDocumentSearch && retrievalMode !== "none" && retrievalMode !== "inventory") {
+  if (needsDocumentSearch && retrievalMode !== "none" && retrievalMode !== "inventory") {
     try {
       const shouldUseSemantic = retrievalMode !== "graph"
       const shouldUseGraph = retrievalMode === "graph" || retrievalMode === "hybrid_graph"
@@ -282,7 +309,7 @@ export async function generateRagRetrievalContext({
       ].filter(Boolean).join(" and ")
 
       onProgress?.(`Retrieving context with ${retrievalSteps}…`)
-      const [semanticChunks, graphChunks] = await Promise.all([
+      const [semanticResult, graphResult] = await Promise.allSettled([
         shouldUseSemantic
           ? retrieveParentChunks(workspace.id, retrievalQuery, {
               additionalQueries: searchQueries.slice(1),
@@ -302,6 +329,40 @@ export async function generateRagRetrievalContext({
           : Promise.resolve([]),
       ])
 
+      if (semanticResult.status === "rejected" && graphResult.status === "rejected") {
+        semanticError = getErrorMessage(semanticResult.reason, "semantic search failed.")
+        graphError = getErrorMessage(graphResult.reason, "graph traversal failed.")
+        throw semanticResult.reason
+      }
+
+      const semanticChunks = semanticResult.status === "fulfilled" ? semanticResult.value : []
+      const graphChunks = graphResult.status === "fulfilled" ? graphResult.value : []
+
+      semanticChunkCount = semanticChunks.length
+      graphChunkCount = graphChunks.length
+
+      if (semanticResult.status === "rejected" || graphResult.status === "rejected") {
+        const failedStep = semanticResult.status === "rejected" ? "semantic search" : "graph traversal"
+        const reason = semanticResult.status === "rejected"
+          ? semanticResult.reason
+          : graphResult.status === "rejected"
+            ? graphResult.reason
+            : undefined
+        const message = getErrorMessage(reason, `${failedStep} failed.`)
+
+        if (semanticResult.status === "rejected") {
+          semanticError = message
+        }
+
+        if (graphResult.status === "rejected") {
+          graphError = message
+        }
+
+        retrievalError = `${failedStep} failed; showing available ${semanticChunks.length > 0 ? "semantic" : "graph"} results. ${message}`
+      } else if (retrievalMode === "hybrid_graph" && semanticChunks.length > 0 && graphChunks.length === 0) {
+        retrievalError = "Graph traversal returned no chunks; showing semantic results from the same prompt."
+      }
+
       retrievedChunks = mergeRetrievedChunks(semanticChunks, graphChunks).slice(
         0,
         parentChunkLimit ?? workspace.ragSearchParentChunkLimit ?? 10
@@ -316,7 +377,7 @@ export async function generateRagRetrievalContext({
         throw error
       }
 
-      retrievalError = error instanceof Error ? error.message : "Document retrieval failed."
+      retrievalError = getErrorMessage(error, "Document retrieval failed.")
       onProgress?.("Retrieval had an issue; continuing with available context…")
     }
   } else if (retrievalMode === "inventory") {
@@ -329,6 +390,14 @@ export async function generateRagRetrievalContext({
     baseInput,
     retrievalError,
     retrievalConfidence: estimateRetrievalConfidence(retrievedChunks),
+    retrievalDiagnostics: {
+      effectiveSearchQueries: searchQueries,
+      effectiveTargetDocumentNames: resolvedTargetDocumentNames,
+      graphChunkCount,
+      graphError,
+      semanticChunkCount,
+      semanticError,
+    },
     retrievalMode,
     retrievalQuery,
     retrievalQueryResult,

@@ -11,6 +11,7 @@ import type { RetrievedContextChunk } from "@/lib/llm/types"
 import { useDashboardStore } from "@/store/dashboard-store"
 import { useWorkspaceStore } from "@/store/workspace-store"
 import type { WorkspaceRouteConfig } from "@/types/dashboard"
+import type { RetrievalMode } from "@/lib/llm/types"
 import { AppIcon } from "./icon"
 import { IconPeaker } from "./icon-peaker"
 import { MobileMenu } from "./mobile-menu"
@@ -36,6 +37,8 @@ interface GraphViewLink {
   type: string
 }
 
+type DebugRetrievalMode = "auto" | Extract<RetrievalMode, "semantic" | "graph" | "hybrid_graph">
+
 function HeaderChip({ icon, label }: HeaderChipProps) {
   return (
     <div className="flex h-9 items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-slate-100 shadow-[0_10px_30px_rgba(0,0,0,.45)]">
@@ -53,6 +56,7 @@ export function Header({ workspace }: HeaderProps) {
   const [ragDebugContext, setRagDebugContext] = useState<RagRetrievalContext | null>(null)
   const [additionalQueries, setAdditionalQueries] = useState("")
   const [graphEntityQueries, setGraphEntityQueries] = useState("")
+  const [debugRetrievalMode, setDebugRetrievalMode] = useState<DebugRetrievalMode>("semantic")
   const [selectedGraphNode, setSelectedGraphNode] = useState("")
   const [targetDocumentNames, setTargetDocumentNames] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
@@ -165,6 +169,7 @@ export function Header({ workspace }: HeaderProps) {
         graphDepth: graphSearchDepth,
         graphEntityQueries: parseList(graphEntityQueries),
         parentChunkLimit,
+        retrievalModeOverride: debugRetrievalMode === "auto" ? undefined : debugRetrievalMode,
         targetDocumentNames: parseList(targetDocumentNames),
       })
 
@@ -385,6 +390,22 @@ export function Header({ workspace }: HeaderProps) {
                 <div className="grid gap-3 md:grid-cols-6">
                   <label className="block">
                     <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
+                      Retrieval mode
+                    </span>
+                    <select
+                      aria-label="RAG retrieval mode"
+                      value={debugRetrievalMode}
+                      onChange={(event) => setDebugRetrievalMode(event.target.value as DebugRetrievalMode)}
+                      className="h-10 w-full rounded-xl border border-white/10 bg-slate-950/30 px-3 text-sm text-slate-100 outline-none focus:border-sky-300/60 focus:ring-2 focus:ring-sky-300/20"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="semantic">Semantic</option>
+                      <option value="graph">Graph</option>
+                      <option value="hybrid_graph">Hybrid Graph</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-sky-200/70">
                       Similarity threshold
                     </span>
                     <Input
@@ -503,6 +524,14 @@ export function Header({ workspace }: HeaderProps) {
                     <span className="block text-sky-200/70">Graph depth</span>
                     <strong>{ragDebugContext.retrievalQueryResult.graphDepth ?? graphSearchDepth}</strong>
                   </div>
+                  <div>
+                    <span className="block text-sky-200/70">Semantic chunks</span>
+                    <strong>{ragDebugContext.retrievalDiagnostics.semanticChunkCount}</strong>
+                  </div>
+                  <div>
+                    <span className="block text-sky-200/70">Graph chunks</span>
+                    <strong>{ragDebugContext.retrievalDiagnostics.graphChunkCount}</strong>
+                  </div>
                   <div className="md:col-span-2">
                     <span className="block text-sky-200/70">Generated query</span>
                     <span className="line-clamp-2 break-words">{ragDebugContext.retrievalQuery}</span>
@@ -511,6 +540,18 @@ export function Header({ workspace }: HeaderProps) {
                     <span className="block text-sky-200/70">Intent</span>
                     <span className="line-clamp-2 break-words">{ragDebugContext.retrievalQueryResult.intent}</span>
                   </div>
+                  {ragDebugContext.retrievalDiagnostics.semanticError ? (
+                    <div className="md:col-span-2">
+                      <span className="block text-sky-200/70">Semantic error</span>
+                      <span className="line-clamp-2 break-words text-amber-100">{ragDebugContext.retrievalDiagnostics.semanticError}</span>
+                    </div>
+                  ) : null}
+                  {ragDebugContext.retrievalDiagnostics.graphError ? (
+                    <div className="md:col-span-2">
+                      <span className="block text-sky-200/70">Graph error</span>
+                      <span className="line-clamp-2 break-words text-amber-100">{ragDebugContext.retrievalDiagnostics.graphError}</span>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {ragDebugContext?.retrievalError ? (

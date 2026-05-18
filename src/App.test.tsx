@@ -277,6 +277,7 @@ describe("App", () => {
     expect(screen.getByRole("spinbutton", { name: "RAG child match limit" })).toHaveValue(40)
     expect(screen.getByRole("spinbutton", { name: "RAG parent chunk limit" })).toHaveValue(10)
     expect(screen.getByRole("spinbutton", { name: "Graph search depth" })).toHaveValue(1)
+    expect(screen.getByRole("combobox", { name: "RAG retrieval mode" })).toHaveValue("semantic")
     expect(screen.getByRole("textbox", { name: "RAG target document names" })).toBeTruthy()
     expect(screen.getByRole("textbox", { name: "RAG additional queries" })).toBeTruthy()
     expect(screen.getByRole("textbox", { name: "Graph entity queries" })).toBeTruthy()
@@ -294,6 +295,11 @@ describe("App", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "Graph search depth" }), {
       target: { value: "2" },
     })
+    fireEvent.change(screen.getByRole("combobox", { name: "RAG retrieval mode" }), {
+      target: { value: "graph" },
+    })
+
+    expect(screen.getByRole("combobox", { name: "RAG retrieval mode" })).toHaveValue("graph")
 
     await waitFor(() => {
       const workspace = useWorkspaceStore
@@ -986,6 +992,222 @@ describe("App", () => {
     })
 
     expect(context.targetDocumentNames).toEqual(["Market_Overview.pdf"])
+  })
+
+  it("forces graph retrieval from the RAG debugger mode override", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    let didCallSemantic = false
+    let didCallGraph = false
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "Customer retention",
+      messages: [],
+      llmClient: {
+        id: "semantic-planner-test-llm",
+        label: "Semantic Planner Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          intent: "Planner selected semantic retrieval.",
+          needsDocumentSearch: true,
+          retrievalMode: "semantic",
+          searchQuery: "customer retention",
+        }),
+        generateReply: async () => "not used",
+      },
+      retrievalModeOverride: "graph",
+      retrieveParentChunks: async () => {
+        didCallSemantic = true
+        return []
+      },
+      retrieveGraphContext: async () => {
+        didCallGraph = true
+        return [
+          {
+            documentId: "doc-1",
+            documentName: "Market_Overview.pdf",
+            graphEdgeTypes: ["co_occurs_with"],
+            graphEntityNames: ["Customer retention", "Customer Health"],
+            matchedChildChunkIds: ["child-graph"],
+            pageNumbers: [3],
+            parentChunkId: "parent-1",
+            retrievalSource: "graph",
+            score: 0.8,
+            similarity: 0.8,
+            text: "Retention improved with customer health.",
+          },
+        ]
+      },
+    })
+
+    expect(context.retrievalMode).toBe("graph")
+    expect(didCallGraph).toBe(true)
+    expect(didCallSemantic).toBe(false)
+    expect(context.retrievedChunks[0].graphEntityNames).toEqual([
+      "Customer retention",
+      "Customer Health",
+    ])
+  })
+
+  it("keeps semantic retrieval active when the debugger semantic mode is selected", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    let didCallSemantic = false
+    let didCallGraph = false
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "list document insights about retention",
+      messages: [],
+      llmClient: {
+        id: "inventory-planner-test-llm",
+        label: "Inventory Planner Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          intent: "Planner selected inventory retrieval.",
+          needsDocumentSearch: false,
+          retrievalMode: "inventory",
+          searchQuery: "list document insights about retention",
+        }),
+        generateReply: async () => "not used",
+      },
+      retrievalModeOverride: "semantic",
+      retrieveParentChunks: async () => {
+        didCallSemantic = true
+        return [
+          {
+            documentId: "doc-1",
+            documentName: "Market_Overview.pdf",
+            matchedChildChunkIds: ["child-semantic"],
+            pageNumbers: [3],
+            parentChunkId: "parent-1",
+            retrievalSource: "semantic",
+            score: 0.7,
+            similarity: 0.75,
+            text: "Retention improved in the market overview.",
+          },
+        ]
+      },
+      retrieveGraphContext: async () => {
+        didCallGraph = true
+        return []
+      },
+    })
+
+    expect(context.retrievalMode).toBe("semantic")
+    expect(didCallSemantic).toBe(true)
+    expect(didCallGraph).toBe(false)
+    expect(context.retrievedChunks[0]).toMatchObject({
+      parentChunkId: "parent-1",
+      retrievalSource: "semantic",
+    })
+  })
+
+  it("keeps semantic chunks in hybrid graph retrieval when graph traversal fails", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "How are retention and customer health related?",
+      messages: [],
+      llmClient: {
+        id: "hybrid-graph-fallback-test-llm",
+        label: "Hybrid Graph Fallback Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          graphEntities: ["Customer retention"],
+          intent: "Explain relationships between retention and customer health.",
+          needsDocumentSearch: true,
+          retrievalMode: "hybrid_graph",
+          searchQuery: "customer retention customer health relationship",
+        }),
+        generateReply: async () => "not used",
+      },
+      retrieveParentChunks: async () => [
+        {
+          documentId: "doc-1",
+          documentName: "Market_Overview.pdf",
+          matchedChildChunkIds: ["child-semantic"],
+          pageNumbers: [3],
+          parentChunkId: "parent-1",
+          retrievalSource: "semantic",
+          score: 0.7,
+          similarity: 0.75,
+          text: "Retention improved with customer health.",
+        },
+      ],
+      retrieveGraphContext: async () => {
+        throw new Error("Graph index unavailable")
+      },
+    })
+
+    expect(context.retrievalMode).toBe("hybrid_graph")
+    expect(context.retrievalError).toContain("graph traversal failed")
+    expect(context.retrievedChunks).toHaveLength(1)
+    expect(context.retrievedChunks[0]).toMatchObject({
+      parentChunkId: "parent-1",
+      retrievalSource: "semantic",
+    })
+  })
+
+  it("uses the raw prompt as the primary semantic query in forced hybrid graph retrieval", async () => {
+    const workspace = TEST_WORKSPACES[0]
+    let semanticQuery = ""
+    let semanticTargets: string[] | undefined
+    const context = await generateRagRetrievalContext({
+      workspace,
+      tabLabel: "Product Analysis",
+      prompt: "customer retention",
+      messages: [],
+      llmClient: {
+        id: "hybrid-raw-query-test-llm",
+        label: "Hybrid Raw Query Test LLM",
+        isAvailable: async () => true,
+        generateRetrievalQuery: async () => ({
+          graphEntities: ["Customer retention"],
+          intent: "Planner rewrote the query and target.",
+          needsDocumentSearch: true,
+          retrievalMode: "hybrid_graph",
+          searchQuery: "unhelpful rewritten planner query",
+          searchQueries: ["unhelpful rewritten planner query"],
+          targetDocumentNames: ["Missing_File.pdf"],
+        }),
+        generateReply: async () => "not used",
+      },
+      retrievalModeOverride: "hybrid_graph",
+      retrieveParentChunks: async (_workspaceId, query, options) => {
+        semanticQuery = query
+        semanticTargets = options.targetDocumentNames
+
+        return query === "customer retention" && options.targetDocumentNames.length === 0
+          ? [
+              {
+                documentId: "doc-1",
+                documentName: "Market_Overview.pdf",
+                matchedChildChunkIds: ["child-semantic"],
+                pageNumbers: [3],
+                parentChunkId: "parent-1",
+                retrievalSource: "semantic",
+                score: 0.7,
+                similarity: 0.75,
+                text: "Retention improved in the market overview.",
+              },
+            ]
+          : []
+      },
+      retrieveGraphContext: async () => [],
+    })
+
+    expect(semanticQuery).toBe("customer retention")
+    expect(semanticTargets).toEqual([])
+    expect(context.retrievalQuery).toBe("customer retention")
+    expect(context.searchQueries[0]).toBe("customer retention")
+    expect(context.targetDocumentNames).toEqual([])
+    expect(context.retrievalDiagnostics.semanticChunkCount).toBe(1)
+    expect(context.retrievalDiagnostics.graphChunkCount).toBe(0)
+    expect(context.retrievedChunks[0]).toMatchObject({
+      parentChunkId: "parent-1",
+      retrievalSource: "semantic",
+    })
   })
 
   it("generates a retrieval query before answering chat with parent chunks", async () => {
