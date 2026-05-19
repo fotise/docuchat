@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Plus, Save, Trash2 } from "lucide-react"
+import { Copy, Plus, Save, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -14,6 +14,7 @@ import {
   upsertGraphEdge,
   upsertGraphEntity,
 } from "@/lib/chat-history/indexed-db"
+import { copyTextToClipboard } from "@/lib/chat/debug-trace"
 
 const GRAPH_ENTITY_TYPES: GraphEntityType[] = [
   "topic",
@@ -78,6 +79,67 @@ function formatDocumentScope(documentIds: string[], documentNameById: Map<string
   return documentIds.map((documentId) => documentNameById.get(documentId) ?? documentId).join(", ")
 }
 
+function createOntologyAnalysisPrompt(
+  workspaceId: string,
+  entities: StoredGraphEntity[],
+  edges: StoredGraphEdge[],
+  documentNameById: Map<string, string>
+) {
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]))
+  const exportedOntology = {
+    workspaceId,
+    summary: {
+      extractedEntities: entities.filter((entity) => getEntitySource(entity) === "extracted").length,
+      extractedRelations: edges.filter((edge) => getEdgeSource(edge) === "extracted").length,
+      manualEntities: entities.filter((entity) => getEntitySource(entity) === "manual").length,
+      manualRelations: edges.filter((edge) => getEdgeSource(edge) === "manual").length,
+      totalEntities: entities.length,
+      totalRelations: edges.length,
+    },
+    entities: [...entities]
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map((entity) => ({
+        aliases: entity.aliases,
+        confidence: Number(entity.confidence.toFixed(3)),
+        document: entity.documentId ? documentNameById.get(entity.documentId) ?? entity.documentId : "Workspace-level",
+        mentionCount: entity.mentions.length,
+        name: entity.name,
+        normalizedName: entity.normalizedName,
+        source: getEntitySource(entity),
+        type: entity.type,
+      })),
+    relations: [...edges]
+      .sort((left, right) => {
+        const leftSource = entityById.get(left.sourceEntityId)?.name ?? left.sourceEntityId
+        const rightSource = entityById.get(right.sourceEntityId)?.name ?? right.sourceEntityId
+
+        return leftSource.localeCompare(rightSource) || left.type.localeCompare(right.type)
+      })
+      .map((edge) => ({
+        confidence: Number(edge.confidence.toFixed(3)),
+        evidence: edge.evidenceText.slice(0, 3),
+        scope: formatDocumentScope(edge.documentIds, documentNameById),
+        source: entityById.get(edge.sourceEntityId)?.name ?? edge.sourceEntityId,
+        sourceType: getEdgeSource(edge),
+        target: entityById.get(edge.targetEntityId)?.name ?? edge.targetEntityId,
+        type: edge.type,
+        weight: edge.weight,
+      })),
+  }
+
+  return [
+    "# DocuChat Ontology Review Request",
+    "",
+    "Analyze this workspace ontology and suggest improvements for graph quality.",
+    "Focus on noisy/generic entities, duplicates/aliases to merge, missing important relations, incorrect relation types, weak co-occurrence edges, and useful manual overrides to add.",
+    "Return concise, actionable recommendations.",
+    "",
+    "```json",
+    JSON.stringify(exportedOntology, null, 2),
+    "```",
+  ].join("\n")
+}
+
 export function OntologyEditorTab({
   workspaceId,
   entities,
@@ -119,6 +181,15 @@ export function OntologyEditorTab({
   const manualEntityCount = entities.filter((entity) => getEntitySource(entity) === "manual").length
   const manualEdgeCount = edges.filter((edge) => getEdgeSource(edge) === "manual").length
   const selectedEntity = selectedEntityId ? entityById.get(selectedEntityId) : undefined
+
+  async function handleCopyOntologyForAnalysis() {
+    try {
+      await copyTextToClipboard(createOntologyAnalysisPrompt(workspaceId, entities, edges, documentNameById))
+      setStatusMessage("Copied ontology for AI analysis.")
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Could not copy ontology.")
+    }
+  }
 
   function resetEntityForm() {
     setSelectedEntityId("")
@@ -235,6 +306,17 @@ export function OntologyEditorTab({
 
   return (
     <div className="app-scrollbar h-full overflow-y-auto p-5">
+      <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-emerald-300/15 bg-emerald-500/10 p-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h3 className="text-sm font-extrabold text-emerald-100">Ontology analysis export</h3>
+          <p className="mt-1 text-xs text-slate-300">Copy a compact ontology prompt to share for AI review and improvement suggestions.</p>
+        </div>
+        <Button type="button" variant="secondary" onClick={() => void handleCopyOntologyForAnalysis()} className="rounded-xl border border-emerald-300/20 bg-emerald-400/15 text-xs font-bold text-emerald-50 hover:bg-emerald-400/25" aria-label="Copy ontology for AI analysis">
+          <Copy className="h-4 w-4" />
+          Copy for AI analysis
+        </Button>
+      </div>
+
       <div className="mb-4 grid grid-cols-4 gap-2 text-xs" aria-label="Ontology summary">
         <div className="min-w-0 rounded-xl border border-white/10 bg-white/5 p-2.5">
           <span className="block truncate text-[10px] uppercase tracking-[0.1em] text-emerald-200/60">Entities</span>

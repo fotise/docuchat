@@ -29,6 +29,7 @@ export function FilePreviewIcon({
             tone === "red" && "bg-rose-400",
             tone === "green" && "bg-teal-300",
             tone === "blue" && "bg-blue-300",
+            tone === "orange" && "bg-orange-300",
             tone === "gray" && "bg-slate-400"
           )}
         />

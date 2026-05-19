@@ -26,8 +26,20 @@ function getProcessingProgress(workspace: WorkspaceRouteConfig) {
     return null
   }
 
-  const processedFiles = totalFiles - unprocessedFiles
-  const percentage = Math.round((processedFiles / totalFiles) * 100)
+  const totalPercentage = workspace.uploadedDocuments.reduce((total, document) => {
+    const status = document.processingStatus ?? "processed"
+
+    if (status === "processed") {
+      return total + 100
+    }
+
+    if (status === "processing") {
+      return total + (document.processingProgress ?? 0)
+    }
+
+    return total
+  }, 0)
+  const percentage = Math.round(totalPercentage / totalFiles)
 
   return {
     pendingFiles: unprocessedFiles,

@@ -8,12 +8,24 @@ export type IconKey =
   | "shield"
   | "compass"
 
-export type UploadedDocTone = "blue" | "red" | "green" | "gray"
+export type UploadedDocTone = "blue" | "red" | "green" | "gray" | "orange"
 export type FileProcessingStatus = "toBeProcessed" | "processing" | "processed" | "error"
 export type MessageSide = "left" | "right"
 export type WorkspaceSearchRetrievalMode = "auto" | "semantic" | "graph" | "hybrid_graph"
 export type WorkspaceTabId = string
 export type ChartMetricKey = "growth" | "reach" | "intent" | "signal"
+
+export type GraphExtractionTermKey =
+  | "genericEntityTerms"
+  | "layoutStartTerms"
+  | "layoutEndTerms"
+  | "rasciActionTerms"
+  | "processStateTerms"
+  | "toolEntityTerms"
+  | "domainTopicPatterns"
+  | "repeatedFooterPhrases"
+
+export type WorkspaceGraphExtractionTerms = Record<GraphExtractionTermKey, string[]>
 
 export interface BrandConfig {
   name: string
@@ -94,6 +106,7 @@ export interface UploadedDocument {
   graphEdgeCount?: number
   graphEntityCount?: number
   pageCount?: number
+  processingProgress?: number
   toBeProcessed?: boolean
   processingStatus?: FileProcessingStatus
 }
@@ -112,6 +125,8 @@ export interface WorkspaceRouteConfig {
   ragSearchChildMatchLimit?: number
   ragSearchParentChunkLimit?: number
   graphEntityQueries?: string[]
+  graphExtractionTerms?: Partial<WorkspaceGraphExtractionTerms>
+  graphExtractionTermsUpdatedAt?: number
   graphSearchDepth?: number
   searchCriteriaQuery?: string
   searchRetrievalMode?: WorkspaceSearchRetrievalMode

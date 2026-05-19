@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { LlmProvider } from "@/components/llm/llm-provider"
 import { WorkspaceProvider } from "@/components/workspaces/workspace-provider"
 import {
@@ -12,7 +12,7 @@ import {
   replaceDocumentGraph,
 } from "@/lib/chat-history/indexed-db"
 import { createParentChildChunks } from "@/lib/file-processing/chunking"
-import { buildDocumentGraph } from "@/lib/file-processing/graph-extraction"
+import { DEFAULT_GRAPH_EXTRACTION_TERMS, buildDocumentGraph } from "@/lib/file-processing/graph-extraction"
 import { parseGraphExtractionResponse } from "@/lib/file-processing/llm-graph-extraction"
 import {
   graphSearchWorkspace,
@@ -767,6 +767,264 @@ describe("App", () => {
         }),
       ])
     )
+  })
+
+  it("filters generic process table terms from graph entity extraction", () => {
+    const graph = buildDocumentGraph(
+      "operations",
+      "doc-noisy-graph",
+      [
+        {
+          id: "parent-noisy-graph",
+          workspaceId: "operations",
+          documentId: "doc-noisy-graph",
+          chunkId: "parent-noisy-graph",
+          level: "parent",
+          text: "Input Output Table Process Requirements Document Step Activity. Service Management Process coordinates Incident Resolution and Change Approval.",
+          pageNumbers: [2],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-noisy-graph",
+          workspaceId: "operations",
+          documentId: "doc-noisy-graph",
+          chunkId: "child-noisy-graph",
+          parentChunkId: "parent-noisy-graph",
+          level: "child",
+          text: "Input Output Table Process Requirements Document Step Activity. Service Management Process coordinates Incident Resolution and Change Approval.",
+          pageNumbers: [2],
+          order: 2,
+          createdAt: 2,
+        },
+      ]
+    )
+    const normalizedNames = graph.entities.map((entity) => entity.normalizedName)
+
+    expect(normalizedNames).toEqual(
+      expect.arrayContaining([
+        "service management process",
+        "incident resolution",
+        "change approval",
+      ])
+    )
+    expect(normalizedNames).not.toEqual(
+      expect.arrayContaining([
+        "input",
+        "output",
+        "table",
+        "process",
+        "requirements",
+        "document",
+        "step",
+        "activity",
+      ])
+    )
+  })
+  it("uses workspace graph extraction term overrides during entity filtering", () => {
+    const graph = buildDocumentGraph(
+      "operations",
+      "doc-custom-terms",
+      [
+        {
+          id: "parent-custom-terms",
+          workspaceId: "operations",
+          documentId: "doc-custom-terms",
+          chunkId: "parent-custom-terms",
+          level: "parent",
+          text: "CustomNoise coordinates with Customer Health during quarterly planning.",
+          pageNumbers: [1],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-custom-terms",
+          workspaceId: "operations",
+          documentId: "doc-custom-terms",
+          chunkId: "child-custom-terms",
+          parentChunkId: "parent-custom-terms",
+          level: "child",
+          text: "CustomNoise coordinates with Customer Health during quarterly planning.",
+          pageNumbers: [1],
+          order: 2,
+          createdAt: 2,
+        },
+      ],
+      {
+        graphExtractionTerms: {
+          ...DEFAULT_GRAPH_EXTRACTION_TERMS,
+          genericEntityTerms: [...DEFAULT_GRAPH_EXTRACTION_TERMS.genericEntityTerms, "customnoise"],
+        },
+      }
+    )
+    const entityNames = graph.entities.map((entity) => entity.normalizedName)
+
+    expect(entityNames).toContain("customer health")
+    expect(entityNames).not.toContain("customnoise")
+  })
+
+  it("filters PDF layout, footer, and RASCI fragments from graph entity extraction", () => {
+    const graph = buildDocumentGraph(
+      "operations",
+      "doc-pdf-artifacts",
+      [
+        {
+          id: "parent-pdf-artifacts",
+          workspaceId: "operations",
+          documentId: "doc-pdf-artifacts",
+          chunkId: "parent-pdf-artifacts",
+          level: "parent",
+          text: "2026 Mar-2026 Page TABLE OF CONTENTS A R Approve L5 Validate Supports Carries CESS & METHODS elements & Appl... ST Restricted Controlled document. Document Management System stores Architecture Definition Document for Manage IT architecture.",
+          pageNumbers: [1],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-pdf-artifacts",
+          workspaceId: "operations",
+          documentId: "doc-pdf-artifacts",
+          chunkId: "child-pdf-artifacts",
+          parentChunkId: "parent-pdf-artifacts",
+          level: "child",
+          text: "2026 Mar-2026 Page TABLE OF CONTENTS A R Approve L5 Validate Supports Carries CESS & METHODS elements & Appl... ST Restricted Controlled document. Document Management System stores Architecture Definition Document for Manage IT architecture.",
+          pageNumbers: [1],
+          order: 2,
+          createdAt: 2,
+        },
+      ]
+    )
+    const normalizedNames = graph.entities.map((entity) => entity.normalizedName)
+
+    expect(normalizedNames).toEqual(
+      expect.arrayContaining([
+        "document management system",
+        "architecture definition document",
+        "manage it architecture",
+      ])
+    )
+    expect(normalizedNames).not.toEqual(
+      expect.arrayContaining([
+        "2026",
+        "mar 2026 page",
+        "table of contents",
+        "a r approve",
+        "l5 validate",
+        "supports carries",
+        "cess methods",
+        "elements appl",
+        "st restricted controlled",
+      ])
+    )
+  })
+
+  it("filters service-management process fragments while preserving full domain concepts", () => {
+    const graph = buildDocumentGraph(
+      "operations",
+      "doc-service-artifacts",
+      [
+        {
+          id: "parent-service-artifacts",
+          workspaceId: "operations",
+          documentId: "doc-service-artifacts",
+          chunkId: "parent-service-artifacts",
+          level: "parent",
+          text: "ST Restricted L5 Create L5 Approve IT L4 Manage IT Approve IT Recorded IT OR Unknown Template NA Fix Alfabet L5 Create Service Bulletin Service Bulletin Status ACTIVE Status Date. Manage IT service includes Event Management, Incident Management, Problem Management, Service Bulletin, Helix and Document Management System.",
+          pageNumbers: [4],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-service-artifacts",
+          workspaceId: "operations",
+          documentId: "doc-service-artifacts",
+          chunkId: "child-service-artifacts",
+          parentChunkId: "parent-service-artifacts",
+          level: "child",
+          text: "ST Restricted L5 Create L5 Approve IT L4 Manage IT Approve IT Recorded IT OR Unknown Template NA Fix Alfabet L5 Create Service Bulletin Service Bulletin Status ACTIVE Status Date. Manage IT service includes Event Management, Incident Management, Problem Management, Service Bulletin, Helix and Document Management System.",
+          pageNumbers: [4],
+          order: 2,
+          createdAt: 2,
+        },
+      ]
+    )
+    const normalizedNames = graph.entities.map((entity) => entity.normalizedName)
+
+    expect(normalizedNames).toEqual(
+      expect.arrayContaining([
+        "manage it service",
+        "event management",
+        "incident management",
+        "problem management",
+        "service bulletin",
+        "document management system",
+      ])
+    )
+    expect(normalizedNames).not.toEqual(
+      expect.arrayContaining([
+        "st restricted",
+        "l5 create",
+        "l5 approve it",
+        "l4 manage it",
+        "approve it",
+        "recorded it",
+        "or unknown",
+        "template na fix",
+        "alfabet l5 create",
+        "service bulletin service bulletin",
+        "status active status date",
+      ])
+    )
+  })
+
+  it("boosts LLM-confirmed graph entity candidates and caps automatic co-occurrence edges", () => {
+    const graph = buildDocumentGraph(
+      "operations",
+      "doc-ranked-graph",
+      [
+        {
+          id: "parent-ranked-graph",
+          workspaceId: "operations",
+          documentId: "doc-ranked-graph",
+          chunkId: "parent-ranked-graph",
+          level: "parent",
+          text: "Delivery disruption affects Alpha Project, Beta System, Gamma Platform, Delta Team, Epsilon Vendor, and Zeta Market.",
+          pageNumbers: [3],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "child-ranked-graph",
+          workspaceId: "operations",
+          documentId: "doc-ranked-graph",
+          chunkId: "child-ranked-graph",
+          parentChunkId: "parent-ranked-graph",
+          level: "child",
+          text: "Delivery disruption affects Alpha Project, Beta System, Gamma Platform, Delta Team, Epsilon Vendor, and Zeta Market.",
+          pageNumbers: [3],
+          order: 2,
+          createdAt: 2,
+        },
+      ],
+      {
+        llmExtraction: {
+          entities: [
+            {
+              confidence: 0.9,
+              name: "Delivery Disruption",
+              type: "topic",
+            },
+          ],
+        },
+      }
+    )
+    const llmConfirmedEntity = graph.entities.find((entity) => entity.normalizedName === "delivery disruption")
+
+    expect(llmConfirmedEntity).toMatchObject({
+      confidence: expect.any(Number),
+      name: "Delivery Disruption",
+    })
+    expect(llmConfirmedEntity?.confidence).toBeGreaterThanOrEqual(0.9)
+    expect(graph.edges.filter((edge) => edge.type === "co_occurs_with")).toHaveLength(10)
   })
 
   it("parses strict JSON graph extraction from a local LLM response", () => {
@@ -1638,6 +1896,76 @@ describe("App", () => {
     ))).toBe(true)
   })
 
+  it("copies the workspace ontology for AI analysis", async () => {
+    const graph = buildDocumentGraph(
+      "market-research",
+      "mr-copy-ontology",
+      [
+        {
+          id: "copy-ontology-parent-1",
+          workspaceId: "market-research",
+          documentId: "mr-copy-ontology",
+          chunkId: "copy-ontology-parent-1",
+          level: "parent",
+          text: "Service Management Process depends on Incident Resolution.",
+          pageNumbers: [6],
+          order: 1,
+          createdAt: 1,
+        },
+        {
+          id: "copy-ontology-child-1",
+          workspaceId: "market-research",
+          documentId: "mr-copy-ontology",
+          chunkId: "copy-ontology-child-1",
+          parentChunkId: "copy-ontology-parent-1",
+          level: "child",
+          text: "Service Management Process depends on Incident Resolution.",
+          pageNumbers: [6],
+          order: 2,
+          createdAt: 2,
+        },
+      ],
+      {
+        llmExtraction: {
+          entities: [
+            { name: "Service Management Process", type: "topic" },
+            { name: "Incident Resolution", type: "topic" },
+          ],
+          relations: [
+            {
+              confidence: 0.88,
+              evidence: "Service Management Process depends on Incident Resolution.",
+              source: "Service Management Process",
+              target: "Incident Resolution",
+              type: "depends_on",
+            },
+          ],
+        },
+      }
+    )
+    const clipboardWrite = vi.fn<(...args: [string]) => Promise<void>>().mockResolvedValue(undefined)
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    })
+    await replaceDocumentGraph("market-research", "mr-copy-ontology", graph.entities, graph.edges)
+
+    renderApp()
+
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Workspace" }))
+    const ontologyTab = await screen.findByRole("tab", { name: "Ontology" })
+    fireEvent.pointerDown(ontologyTab)
+    fireEvent.click(ontologyTab)
+    fireEvent.click(await screen.findByRole("button", { name: "Copy ontology for AI analysis" }))
+
+    await screen.findByText("Copied ontology for AI analysis.")
+    expect(clipboardWrite).toHaveBeenCalledTimes(1)
+    expect(clipboardWrite.mock.calls[0][0]).toContain("# DocuChat Ontology Review Request")
+    expect(clipboardWrite.mock.calls[0][0]).toContain("Service Management Process")
+    expect(clipboardWrite.mock.calls[0][0]).toContain("depends_on")
+  })
+
   it("renders fixed file cards with ellipsis, tooltip details, and a scrollable list", async () => {
     renderApp()
 
@@ -1765,6 +2093,7 @@ describe("App", () => {
     })
 
     expect(await screen.findByText("Process_Me.pdf")).toBeTruthy()
+    expect(screen.getByLabelText("Process_Me.pdf processing progress 0%")).toBeTruthy()
 
     expect(
       await useWorkspaceStore
@@ -1786,8 +2115,12 @@ describe("App", () => {
     const processingDocument = processingDocuments.find(
       (document) => document.name === "Process_Me.pdf"
     )
+    const processingFileCard = screen.getByRole("button", {
+      name: "Open details for Process_Me.pdf",
+    })
 
     expect(processingDocument?.processingStatus).toBe("processing")
+    expect(processingFileCard).toHaveClass("animate-pulse", "border-orange-300/70", "bg-orange-500/15")
     expect(worker.messages).toHaveLength(1)
     expect(worker.messages[0]?.message).toMatchObject({
       workspaceId: "market-research",
@@ -1797,6 +2130,27 @@ describe("App", () => {
       mimeType: "application/pdf",
     })
     expect(worker.messages[0]?.transfer).toHaveLength(1)
+
+    worker.onmessage?.({
+      data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
+        workspaceId: "market-research",
+        documentId: processingDocument?.id,
+        processingProgress: 55,
+        processingStatus: "processing",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces[0]?.uploadedDocuments.find(
+          (item) => item.name === "Process_Me.pdf"
+        )
+
+      expect(document?.processingProgress).toBe(55)
+    })
+    expect(screen.getByLabelText("Process_Me.pdf processing progress 55%")).toBeTruthy()
 
     worker.onmessage?.({
       data: {
@@ -1819,6 +2173,7 @@ describe("App", () => {
         )
 
       expect(document?.processingStatus).toBe("processed")
+      expect(document?.processingProgress).toBe(100)
       expect(document?.toBeProcessed).toBe(false)
       expect(document?.tone).toBe("blue")
       expect(document?.chunkCount).toBe(7)
@@ -1835,6 +2190,7 @@ describe("App", () => {
     )
 
     expect(processedDocument?.processingStatus).toBe("processed")
+    expect(processedDocument?.processingProgress).toBe(100)
     expect(processedDocument?.tone).toBe("blue")
     expect(processedDocument?.chunkCount).toBe(7)
     expect(
@@ -2082,6 +2438,121 @@ describe("App", () => {
     expect(
       documents.filter((document) => document.processingStatus === "toBeProcessed")
     ).toHaveLength(1)
+  })
+
+  it("passes saved graph extraction terms to processing and only requeues files explicitly", async () => {
+    renderApp()
+
+    const firstWorker = createControlledProcessingWorker()
+    const secondWorker = createControlledProcessingWorker()
+
+    fireEvent.click(await screen.findByRole("button", { name: "New Workspace" }))
+    expect(await screen.findByText("This workspace is ready. Upload documents or ask a question to begin.")).toBeTruthy()
+    const workspaceId = useWorkspaceStore.getState().workspaces.find((workspace) => workspace.title === "Workspace 4")?.id ?? "workspace-4"
+
+    fireEvent.change(await screen.findByLabelText("Upload files to workspace"), {
+      target: {
+        files: [
+          new File(["terms"], "Terms_Reprocess.pdf", {
+            type: "application/pdf",
+          }),
+        ],
+      },
+    })
+
+    expect(await screen.findByText("Terms_Reprocess.pdf")).toBeTruthy()
+    await useWorkspaceStore.getState().updateWorkspaceGraphExtractionTerms(workspaceId, {
+      ...DEFAULT_GRAPH_EXTRACTION_TERMS,
+      genericEntityTerms: [...DEFAULT_GRAPH_EXTRACTION_TERMS.genericEntityTerms, "customnoise"],
+    })
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => firstWorker as unknown as Worker)
+    ).toBe(true)
+    expect(firstWorker.messages[0]?.message).toMatchObject({
+      graphExtractionTerms: expect.objectContaining({
+        genericEntityTerms: expect.arrayContaining(["customnoise"]),
+      }),
+    })
+
+    const processingDocument = (await getWorkspaceDocuments(workspaceId)).find(
+      (document) => document.name === "Terms_Reprocess.pdf"
+    )
+
+    firstWorker.onmessage?.({
+      data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
+        workspaceId,
+        documentId: processingDocument?.id,
+        childChunkCount: 1,
+        chunkCount: 2,
+        pageCount: 1,
+        parentChunkCount: 1,
+        processingStatus: "processed",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces.find((workspace) => workspace.id === workspaceId)
+        ?.uploadedDocuments.find((item) => item.name === "Terms_Reprocess.pdf")
+
+      expect(document?.processingStatus).toBe("processed")
+    })
+
+    const queuedCount = await useWorkspaceStore.getState().reprocessWorkspaceDocuments(workspaceId)
+
+    expect(queuedCount).toBe(1)
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces.find((workspace) => workspace.id === workspaceId)
+        ?.uploadedDocuments.find((item) => item.name === "Terms_Reprocess.pdf")
+
+      expect(document?.processingStatus).toBe("toBeProcessed")
+    })
+
+    expect(
+      await useWorkspaceStore
+        .getState()
+        .processNextWorkspaceDocument(() => secondWorker as unknown as Worker)
+    ).toBe(true)
+
+    const reprocessingDocument = (await getWorkspaceDocuments(workspaceId)).find(
+      (document) => document.name === "Terms_Reprocess.pdf"
+    )
+
+    secondWorker.onmessage?.({
+      data: {
+        type: FILE_PROCESSING_RESULT_MESSAGE,
+        workspaceId,
+        documentId: reprocessingDocument?.id,
+        childChunkCount: 1,
+        chunkCount: 2,
+        pageCount: 1,
+        parentChunkCount: 1,
+        processingStatus: "processed",
+      },
+    } as MessageEvent)
+
+    await waitFor(() => {
+      const document = useWorkspaceStore
+        .getState()
+        .workspaces.find((workspace) => workspace.id === workspaceId)
+        ?.uploadedDocuments.find((item) => item.name === "Terms_Reprocess.pdf")
+
+      expect(document?.processingStatus).toBe("processed")
+      expect(document?.toBeProcessed).toBe(false)
+    })
+
+    expect(
+      useWorkspaceStore
+        .getState()
+        .workspaces.find((workspace) => workspace.id === workspaceId)
+        ?.uploadedDocuments.filter((document) => document.processingStatus === "toBeProcessed")
+    ).toHaveLength(0)
   })
 
   it("selects a file processor from the document extension", async () => {

@@ -16,6 +16,7 @@ import {
   type GeneratedEmbedding,
 } from "./embeddings"
 import { applyGraphEntityEmbeddings, buildDocumentGraph } from "./graph-extraction"
+import type { WorkspaceGraphExtractionTerms } from "@/types/dashboard"
 import { extractGraphWithLlm, type ExtractGraphWithLlmInput } from "./llm-graph-extraction"
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url"
 
@@ -28,6 +29,7 @@ export type FileProcessorKind =
   | "word"
 
 export interface FileProcessingJob {
+  graphExtractionTerms?: Partial<WorkspaceGraphExtractionTerms>
   workspaceId?: string
   documentId?: string
   fileName: string
@@ -47,11 +49,12 @@ export interface FileProcessingResult {
   parentChunkCount?: number
 }
 
-type FileProcessor = (job: FileProcessingJob) => Promise<FileProcessingResult>
+type FileProcessor = (job: FileProcessingJob, options?: DocumentPipelineOptions) => Promise<FileProcessingResult>
 
 interface DocumentPipelineOptions extends ParentChildChunkOptions {
   extractGraphWithLlm?: (input: ExtractGraphWithLlmInput) => Promise<Awaited<ReturnType<typeof extractGraphWithLlm>>>
   generateEmbeddings?: (texts: string[]) => Promise<GeneratedEmbedding[]>
+  onProgress?: (progress: number) => void
 }
 
 interface PdfPipelineOptions extends DocumentPipelineOptions {
@@ -242,14 +245,17 @@ async function processPageTextPipeline(
   let didPersistChunks = false
 
   try {
+    options.onProgress?.(25)
     const parentChunks = createParentChildChunks(pages, {
       ...options,
       idPrefix: options.idPrefix ?? job.documentId,
     })
     const childChunks = parentChunks.flatMap((parent) => parent.children)
+    options.onProgress?.(40)
     const childEmbeddings = await (options.generateEmbeddings ?? generateEmbeddings)(
       childChunks.map((child) => child.text)
     )
+    options.onProgress?.(55)
     const storedChunks = flattenChunks(
       job.workspaceId,
       job.documentId,
@@ -259,6 +265,7 @@ async function processPageTextPipeline(
 
     await replaceDocumentChunks(job.workspaceId, job.documentId, storedChunks)
     didPersistChunks = true
+    options.onProgress?.(65)
 
     const llmExtraction = await (options.extractGraphWithLlm ?? extractGraphWithLlm)({
       documentName: job.fileName,
@@ -268,13 +275,18 @@ async function processPageTextPipeline(
         text: parent.text,
       })),
     }).catch(() => undefined)
+    options.onProgress?.(76)
 
     const documentGraph = buildDocumentGraph(
       job.workspaceId,
       job.documentId,
       storedChunks,
-      { llmExtraction }
+      {
+        graphExtractionTerms: job.graphExtractionTerms,
+        llmExtraction,
+      }
     )
+    options.onProgress?.(84)
     const graphEntityEmbeddings = documentGraph.entities.length > 0
       ? await (options.generateEmbeddings ?? generateEmbeddings)(
           documentGraph.entities.map((entity) => [
@@ -284,6 +296,7 @@ async function processPageTextPipeline(
           ].join("\n"))
         )
       : []
+    options.onProgress?.(92)
     const embeddedDocumentGraph = applyGraphEntityEmbeddings(
       documentGraph,
       graphEntityEmbeddings
@@ -295,6 +308,7 @@ async function processPageTextPipeline(
       embeddedDocumentGraph.entities,
       embeddedDocumentGraph.edges
     )
+    options.onProgress?.(98)
 
     return {
       byteLength: job.content.byteLength,
@@ -345,8 +359,8 @@ export async function processTextPipeline(
   )
 }
 
-async function processCsvPipeline(job: FileProcessingJob) {
-  const result = await processTextPipeline(job)
+async function processCsvPipeline(job: FileProcessingJob, options: DocumentPipelineOptions = {}) {
+  const result = await processTextPipeline(job, options)
 
   return {
     ...result,
@@ -354,8 +368,8 @@ async function processCsvPipeline(job: FileProcessingJob) {
   } satisfies FileProcessingResult
 }
 
-async function processMarkdownPipeline(job: FileProcessingJob) {
-  return processTextPipeline(job)
+async function processMarkdownPipeline(job: FileProcessingJob, options: DocumentPipelineOptions = {}) {
+  return processTextPipeline(job, options)
 }
 
 export async function processPdfPipeline(
@@ -367,19 +381,20 @@ export async function processPdfPipeline(
   }
 
   const pages = await (options.extractTextByPage ?? extractPdfTextByPage)(job.content)
+  options.onProgress?.(20)
 
   return processPageTextPipeline(job, pages, "pdf", options)
 }
 
 const processorByExtension: Record<string, FileProcessor> = {
-  csv: (job) => processCsvPipeline(job),
+  csv: (job, options) => processCsvPipeline(job, options),
   doc: (job) => processUnsupported("word", job),
   docx: (job) => processUnsupported("word", job),
-  md: (job) => processMarkdownPipeline(job),
-  pdf: (job) => processPdfPipeline(job),
+  md: (job, options) => processMarkdownPipeline(job, options),
+  pdf: (job, options) => processPdfPipeline(job, options),
   ppt: (job) => processUnsupported("presentation", job),
   pptx: (job) => processUnsupported("presentation", job),
-  txt: (job) => processTextPipeline(job),
+  txt: (job, options) => processTextPipeline(job, options),
   xls: (job) => processUnsupported("spreadsheet", job),
   xlsx: (job) => processUnsupported("spreadsheet", job),
 }
@@ -411,8 +426,8 @@ export function getFileProcessor(job: FileProcessingJob) {
   return processorByExtension[extension] ?? genericProcessor
 }
 
-export async function processWorkspaceFile(job: FileProcessingJob) {
+export async function processWorkspaceFile(job: FileProcessingJob, options: DocumentPipelineOptions = {}) {
   const processor = getFileProcessor(job)
 
-  return processor(job)
+  return processor(job, options)
 }

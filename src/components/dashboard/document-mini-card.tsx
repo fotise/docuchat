@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom"
 import { useEffect, useId, useRef, useState } from "react"
 import { Eye, Trash2 } from "lucide-react"
+import { cn } from "@/lib/utils"
 import type { UploadedDocument } from "@/types/dashboard"
 import { FilePreviewIcon } from "./file-preview-icon"
 
@@ -10,6 +11,7 @@ type DocumentMiniCardProps = Pick<
   | "chunkCount"
   | "name"
   | "parentChunkCount"
+  | "processingProgress"
   | "processingStatus"
   | "size"
   | "tone"
@@ -40,10 +42,13 @@ function formatFileSize(size?: number) {
 
 function getStatusLabel(
   processingStatus: UploadedDocument["processingStatus"],
-  toBeProcessed?: boolean
+  toBeProcessed?: boolean,
+  processingProgress?: number
 ) {
+  const progressLabel = typeof processingProgress === "number" ? ` (${processingProgress}%)` : ""
+
   if (processingStatus === "processing") {
-    return "Processing"
+    return `Processing${progressLabel}`
   }
 
   if (processingStatus === "error") {
@@ -51,10 +56,30 @@ function getStatusLabel(
   }
 
   if (processingStatus === "toBeProcessed" || toBeProcessed) {
-    return "To be processed"
+    return `To be processed${progressLabel}`
   }
 
-  return "Processed"
+  return `Processed${progressLabel}`
+}
+
+function getProcessingProgress(
+  processingStatus: UploadedDocument["processingStatus"],
+  toBeProcessed?: boolean,
+  processingProgress?: number
+) {
+  if (typeof processingProgress === "number") {
+    return Math.min(100, Math.max(0, Math.round(processingProgress)))
+  }
+
+  if (processingStatus === "processed") {
+    return 100
+  }
+
+  if (processingStatus === "toBeProcessed" || toBeProcessed) {
+    return 0
+  }
+
+  return undefined
 }
 
 export function DocumentMiniCard({
@@ -62,6 +87,7 @@ export function DocumentMiniCard({
   chunkCount,
   name,
   parentChunkCount,
+  processingProgress,
   size,
   toBeProcessed,
   processingStatus,
@@ -76,15 +102,20 @@ export function DocumentMiniCard({
     left: number
     top: number
   } | null>(null)
+  const isProcessing = processingStatus === "processing"
   const displayTone =
     processingStatus === "error"
       ? "red"
-      : toBeProcessed || processingStatus === "processing"
+      : isProcessing
+        ? "orange"
+        : toBeProcessed
         ? "gray"
         : "blue"
   const sizeLabel = formatFileSize(size)
-  const statusLabel = getStatusLabel(processingStatus, toBeProcessed)
+  const progressPercentage = getProcessingProgress(processingStatus, toBeProcessed, processingProgress)
+  const statusLabel = getStatusLabel(processingStatus, toBeProcessed, progressPercentage)
   const chunksLabel = typeof chunkCount === "number" ? chunkCount : "Unavailable"
+  const shouldShowProgress = processingStatus === "processing" || processingStatus === "toBeProcessed" || toBeProcessed
 
   function updateTooltipPosition() {
     const card = cardRef.current
@@ -159,15 +190,35 @@ export function DocumentMiniCard({
           onBlur={hideTooltip}
           onClick={onClick}
           onFocus={showTooltip}
-          className="relative h-28 w-full cursor-pointer rounded-xl border border-white/10 bg-white/5 p-2.5 text-left shadow-[0_10px_30px_rgba(0,0,0,.45)] transition hover:border-sky-300/40 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70"
+          className={cn(
+            "relative flex h-28 w-full cursor-pointer flex-col rounded-xl border border-white/10 bg-white/5 p-2.5 text-left shadow-[0_10px_30px_rgba(0,0,0,.45)] transition hover:border-sky-300/40 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70",
+            isProcessing && "animate-pulse border-orange-300/70 bg-orange-500/15 shadow-[0_0_32px_rgba(251,146,60,.28)] hover:border-orange-300/80 hover:bg-orange-500/20 focus-visible:ring-orange-300/70"
+          )}
         >
-          <div className="mb-2">
+          <div className="mb-2 shrink-0">
             <FilePreviewIcon tone={displayTone} size="large" />
           </div>
 
-          <div className="truncate text-[11px] leading-4 text-slate-200">
+          <div className="min-w-0 truncate text-[11px] leading-4 text-slate-200">
             {name}
           </div>
+          {shouldShowProgress && typeof progressPercentage === "number" ? (
+            <div className="mt-auto pt-2" aria-label={`${name} processing progress ${progressPercentage}%`}>
+              <div className="mb-1 flex items-center justify-between text-[10px] font-bold text-orange-100">
+                <span>{isProcessing ? "Processing" : "Queued"}</span>
+                <span>{progressPercentage}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-900/70">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    isProcessing ? "bg-orange-300" : "bg-slate-400"
+                  )}
+                  style={{ width: `${progressPercentage}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
         </button>
 
         {onPreviewClick ? (

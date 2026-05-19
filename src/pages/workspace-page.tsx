@@ -21,6 +21,8 @@ export function WorkspacePage() {
   const deleteWorkspace = useWorkspaceStore((state) => state.deleteWorkspace)
   const deleteWorkspaceDocument = useWorkspaceStore((state) => state.deleteWorkspaceDocument)
   const reprocessWorkspaceDocument = useWorkspaceStore((state) => state.reprocessWorkspaceDocument)
+  const reprocessWorkspaceDocuments = useWorkspaceStore((state) => state.reprocessWorkspaceDocuments)
+  const updateWorkspaceGraphExtractionTerms = useWorkspaceStore((state) => state.updateWorkspaceGraphExtractionTerms)
   const uploadWorkspaceFiles = useWorkspaceStore((state) => state.uploadWorkspaceFiles)
   const workspace = workspaces.find((item) => item.id === workspaceId)
 
@@ -133,6 +135,14 @@ export function WorkspacePage() {
     await reprocessWorkspaceDocument(workspace.id, documentId)
   }
 
+  async function handleReprocessAllDocuments() {
+    if (!workspace) {
+      return 0
+    }
+
+    return reprocessWorkspaceDocuments(workspace.id)
+  }
+
   return (
     <DashboardShell
       workspace={workspace}
@@ -144,10 +154,14 @@ export function WorkspacePage() {
             uploadLabel={labels.uploadButton}
             manageLabel={labels.manageButton}
             documents={workspace.uploadedDocuments}
+            graphExtractionTerms={workspace.graphExtractionTerms}
+            graphExtractionTermsUpdatedAt={workspace.graphExtractionTermsUpdatedAt}
             onUploadFiles={(files) => void handleUploadFiles(files)}
             onDeleteAllDocuments={() => void handleDeleteAllDocuments()}
             onDeleteDocument={(documentId) => void handleDeleteDocument(documentId)}
             onReprocessDocument={(documentId) => void handleReprocessDocument(documentId)}
+            onReprocessAllDocuments={() => handleReprocessAllDocuments()}
+            onUpdateGraphExtractionTerms={(terms) => updateWorkspaceGraphExtractionTerms(workspace.id, terms)}
             onDeleteWorkspace={() => void handleDeleteWorkspace()}
           />
         </>

@@ -23,9 +23,10 @@ import {
   type StoredGraphEdge,
   type StoredGraphEntity,
 } from "@/lib/chat-history/indexed-db"
-import type { UploadedDocument } from "@/types/dashboard"
+import type { UploadedDocument, WorkspaceGraphExtractionTerms } from "@/types/dashboard"
 import { DocumentMiniCard } from "./document-mini-card"
 import { FilePreviewIcon } from "./file-preview-icon"
+import { GraphExtractionTermsTab } from "./graph-extraction-terms-tab"
 import { OntologyEditorTab } from "./ontology-editor-tab"
 
 const CHUNKS_PER_PAGE = 10
@@ -43,6 +44,10 @@ interface UploadedDocumentsCardProps {
   onDeleteDocument?: (documentId: string) => Promise<void> | void
   onDeleteAllDocuments?: () => Promise<void> | void
   onReprocessDocument?: (documentId: string) => Promise<void> | void
+  onReprocessAllDocuments?: () => Promise<number> | number
+  onUpdateGraphExtractionTerms?: (terms: Partial<WorkspaceGraphExtractionTerms>) => Promise<void> | void
+  graphExtractionTerms?: Partial<WorkspaceGraphExtractionTerms>
+  graphExtractionTermsUpdatedAt?: number
   onDeleteWorkspace?: () => void
 }
 
@@ -74,6 +79,10 @@ export function UploadedDocumentsCard({
   onDeleteDocument,
   onDeleteAllDocuments,
   onReprocessDocument,
+  onReprocessAllDocuments,
+  onUpdateGraphExtractionTerms,
+  graphExtractionTerms,
+  graphExtractionTermsUpdatedAt,
   onDeleteWorkspace,
 }: UploadedDocumentsCardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -566,6 +575,7 @@ export function UploadedDocumentsCard({
               chunkCount={doc.chunkCount}
               name={doc.name}
               parentChunkCount={doc.parentChunkCount}
+              processingProgress={doc.processingProgress}
               tone={doc.tone}
               size={doc.size}
               toBeProcessed={doc.toBeProcessed}
@@ -705,6 +715,13 @@ export function UploadedDocumentsCard({
                   >
                     Ontology
                   </TabsTrigger>
+                  <TabsTrigger
+                    value="terms"
+                    onClick={() => setManagementTab("terms")}
+                    className="rounded-xl px-4 py-2.5 text-xs font-bold transition data-[state=active]:border data-[state=active]:border-amber-400/30 data-[state=active]:bg-gradient-to-b data-[state=active]:from-amber-500/25 data-[state=active]:to-white/[0.04] data-[state=active]:text-white data-[state=inactive]:border data-[state=inactive]:border-transparent data-[state=inactive]:bg-transparent data-[state=inactive]:text-slate-300"
+                  >
+                    Extraction terms
+                  </TabsTrigger>
                 </TabsList>
               </div>
 
@@ -789,6 +806,7 @@ export function UploadedDocumentsCard({
                           chunkCount={doc.chunkCount}
                           name={doc.name}
                           parentChunkCount={doc.parentChunkCount}
+                          processingProgress={doc.processingProgress}
                           tone={doc.tone}
                           size={doc.size}
                           toBeProcessed={doc.toBeProcessed}
@@ -959,6 +977,16 @@ export function UploadedDocumentsCard({
                   documentNameById={documentNameById}
                   isLoading={isLoadingWorkspaceGraph}
                   onRefresh={refreshWorkspaceGraph}
+                />
+              </TabsContent>
+
+              <TabsContent value="terms" className="m-0 min-h-0 flex-1">
+                <GraphExtractionTermsTab
+                  documents={documents}
+                  terms={graphExtractionTerms}
+                  updatedAt={graphExtractionTermsUpdatedAt}
+                  onSave={onUpdateGraphExtractionTerms ?? (() => undefined)}
+                  onQueueAllDocumentsForReprocessing={onReprocessAllDocuments}
                 />
               </TabsContent>
             </Tabs>

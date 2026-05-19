@@ -17,6 +17,7 @@ import type {
   FileProcessingStatus,
   IconKey,
   UploadedDocument,
+  WorkspaceGraphExtractionTerms,
   WorkspaceRouteConfig,
   WorkspaceSearchRetrievalMode,
 } from "@/types/dashboard"
@@ -41,9 +42,11 @@ interface FileProcessingWorkerResult {
   graphEntityCount?: number
   pageCount?: number
   parentChunkCount?: number
+  processingProgress?: number
 }
 
 interface FileProcessingWorkerRequest {
+  graphExtractionTerms?: Partial<WorkspaceGraphExtractionTerms>
   workspaceId: string
   documentId: string
   fileName: string
@@ -87,11 +90,16 @@ interface WorkspaceStoreState {
     workspaceId: string,
     criteria: WorkspaceSearchCriteria
   ) => Promise<void>
+  updateWorkspaceGraphExtractionTerms: (
+    workspaceId: string,
+    terms: Partial<WorkspaceGraphExtractionTerms>
+  ) => Promise<void>
   uploadWorkspaceFiles: (workspaceId: string, files: File[]) => Promise<void>
   processNextWorkspaceDocument: (
     workerFactory?: FileProcessingWorkerFactory
   ) => Promise<boolean>
   reprocessWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
+  reprocessWorkspaceDocuments: (workspaceId: string) => Promise<number>
   deleteAllWorkspaceDocuments: (workspaceId: string) => Promise<void>
   deleteWorkspaceDocument: (workspaceId: string, documentId: string) => Promise<void>
   deleteWorkspace: (workspaceId: string) => Promise<void>
@@ -186,6 +194,7 @@ function createUploadedDocument(file: File): UploadedDocument {
     tone: "gray",
     size: file.size,
     uploadedAt: Date.now(),
+    processingProgress: 0,
     toBeProcessed: true,
     processingStatus: "toBeProcessed",
   }
@@ -222,7 +231,7 @@ function updateWorkspaceDocumentState(
   processingStatus: FileProcessingStatus,
   metadata: Pick<
     UploadedDocument,
-    "childChunkCount" | "chunkCount" | "graphEdgeCount" | "graphEntityCount" | "pageCount" | "parentChunkCount"
+    "childChunkCount" | "chunkCount" | "graphEdgeCount" | "graphEntityCount" | "pageCount" | "parentChunkCount" | "processingProgress"
   > = {}
 ) {
   return {
@@ -239,6 +248,13 @@ function updateWorkspaceDocumentState(
                   : "gray",
             toBeProcessed: processingStatus === "toBeProcessed",
             processingStatus,
+            processingProgress: metadata.processingProgress ?? (
+              processingStatus === "processed"
+                ? 100
+                : processingStatus === "toBeProcessed"
+                  ? 0
+                  : document.processingProgress ?? 0
+            ),
             ...metadata,
           }
         : document
@@ -444,6 +460,27 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     await saveWorkspace(updatedWorkspace)
   },
 
+  updateWorkspaceGraphExtractionTerms: async (workspaceId, terms) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return
+    }
+
+    const updatedWorkspace = {
+      ...workspace,
+      graphExtractionTerms: terms,
+      graphExtractionTermsUpdatedAt: Date.now(),
+    }
+
+    await saveWorkspace(updatedWorkspace)
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+  },
+
   uploadWorkspaceFiles: async (workspaceId, files) => {
     if (files.length === 0) {
       return
@@ -523,6 +560,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         tone: "gray",
         toBeProcessed: false,
         processingStatus: "processing",
+        processingProgress: 5,
       })
     }
 
@@ -553,6 +591,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           tone: "red",
           toBeProcessed: false,
           processingStatus: "error",
+          processingProgress: 0,
         })
       }
 
@@ -605,6 +644,41 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
       }
 
       if (result.processingStatus !== "processed") {
+        if (result.processingStatus === "processing") {
+          const currentWorkspace = get().workspaces.find(
+            (item) => item.id === result.workspaceId
+          )
+
+          if (!currentWorkspace) {
+            return
+          }
+
+          const progressWorkspace = updateWorkspaceDocumentState(
+            currentWorkspace,
+            result.documentId,
+            "processing",
+            { processingProgress: result.processingProgress ?? 5 }
+          )
+          const currentStoredDocument = await getWorkspaceDocument(result.documentId)
+
+          if (currentStoredDocument) {
+            await updateStoredWorkspaceDocument({
+              ...currentStoredDocument,
+              tone: "gray",
+              toBeProcessed: false,
+              processingStatus: "processing",
+              processingProgress: result.processingProgress ?? 5,
+            })
+          }
+
+          set((state) => ({
+            workspaces: state.workspaces.map((item) =>
+              item.id === result.workspaceId ? progressWorkspace : item
+            ),
+          }))
+          return
+        }
+
         console.error("[DocuChat] File processing pipeline returned an error", {
           documentId: result.documentId,
           errorMessage: result.errorMessage ?? "File processing failed",
@@ -645,6 +719,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           graphEntityCount: result.graphEntityCount,
           pageCount: result.pageCount,
           parentChunkCount: result.parentChunkCount,
+          processingProgress: 100,
         }
       )
       const currentStoredDocument = await getWorkspaceDocument(result.documentId)
@@ -661,6 +736,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
           tone: "blue",
           toBeProcessed: false,
           processingStatus: "processed",
+          processingProgress: 100,
         })
       }
 
@@ -675,6 +751,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
     }
 
     const workerRequest: FileProcessingWorkerRequest = {
+      graphExtractionTerms: workspace.graphExtractionTerms,
       workspaceId: processingWorkspaceId,
       documentId: processingDocumentId,
       fileName: document.name,
@@ -716,6 +793,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         graphEntityCount: undefined,
         pageCount: undefined,
         parentChunkCount: undefined,
+        processingProgress: 0,
       }
     )
     const storedDocument = await getWorkspaceDocument(documentId)
@@ -735,6 +813,7 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         tone: "gray",
         toBeProcessed: true,
         processingStatus: "toBeProcessed",
+        processingProgress: 0,
       })
     }
 
@@ -745,6 +824,79 @@ export const useWorkspaceStore = create<WorkspaceStoreState>()((set, get) => ({
         item.id === workspaceId ? updatedWorkspace : item
       ),
     }))
+  },
+
+  reprocessWorkspaceDocuments: async (workspaceId) => {
+    const workspace = get().workspaces.find((item) => item.id === workspaceId)
+
+    if (!workspace) {
+      return 0
+    }
+
+    const reprocessableDocuments = workspace.uploadedDocuments.filter(
+      (document) => getDocumentProcessingStatus(document) !== "processing"
+    )
+
+    if (reprocessableDocuments.length === 0) {
+      return 0
+    }
+
+    const reprocessableDocumentIds = new Set(reprocessableDocuments.map((document) => document.id))
+    const updatedWorkspace = {
+      ...workspace,
+      uploadedDocuments: workspace.uploadedDocuments.map((document) =>
+        reprocessableDocumentIds.has(document.id)
+          ? {
+              ...document,
+              childChunkCount: undefined,
+              chunkCount: undefined,
+              graphEdgeCount: undefined,
+              graphEntityCount: undefined,
+              pageCount: undefined,
+              parentChunkCount: undefined,
+              processingProgress: 0,
+              processingStatus: "toBeProcessed" as const,
+              toBeProcessed: true,
+              tone: "gray" as const,
+            }
+          : document
+      ),
+    }
+
+    await Promise.all(reprocessableDocuments.flatMap(async (document) => {
+      const storedDocument = await getWorkspaceDocument(document.id)
+
+      await deleteDocumentChunks(document.id)
+      await deleteDocumentGraph(document.id)
+
+      if (!storedDocument) {
+        return []
+      }
+
+      await updateStoredWorkspaceDocument({
+        ...storedDocument,
+        childChunkCount: undefined,
+        chunkCount: undefined,
+        graphEdgeCount: undefined,
+        graphEntityCount: undefined,
+        pageCount: undefined,
+        parentChunkCount: undefined,
+        processingProgress: 0,
+        processingStatus: "toBeProcessed",
+        toBeProcessed: true,
+        tone: "gray",
+      })
+      return []
+    }))
+
+    await saveWorkspace(updatedWorkspace)
+    set((state) => ({
+      workspaces: state.workspaces.map((item) =>
+        item.id === workspaceId ? updatedWorkspace : item
+      ),
+    }))
+
+    return reprocessableDocuments.length
   },
 
   deleteAllWorkspaceDocuments: async (workspaceId) => {
